@@ -1,0 +1,7 @@
+{
+  "name": "json_pretty",
+  "version": "1.0.0",
+  "description": "Validate and pretty-print JSON text",
+  "permissions": ["json:parse", "json:format"],
+  "checksum": "ed43edd1e76e31dddff50a577db0b6ae8e0d899b47c84d0b306c0b54872f572b"
+}

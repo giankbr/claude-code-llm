@@ -25,6 +25,7 @@ export async function* streamResponse(
   options?: {
     signal?: AbortSignal;
     sessionId?: string;
+    correlationId?: string;
     permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
   }
 ): AsyncGenerator<string> {

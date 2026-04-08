@@ -1,11 +1,14 @@
 import {
+  readFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import type { Command } from "./base";
 import { colors } from "../ui";
@@ -28,6 +31,53 @@ function listPlugins(): string[] {
     return [];
   }
   return readdirSync(PLUGIN_DIR).filter((name) => isPluginFile(name));
+}
+
+interface PluginManifest {
+  name: string;
+  version: string;
+  description: string;
+  permissions: string[];
+  checksum: string;
+}
+
+function checksumFor(filePath: string): string {
+  const content = readFileSync(filePath);
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function inferNameFromFile(fileName: string): string {
+  return fileName.replace(/\.(ts|js|mjs)$/i, "");
+}
+
+function refreshPluginManifest(pluginFileName: string): string {
+  const pluginPath = path.join(PLUGIN_DIR, pluginFileName);
+  const manifestPath = `${pluginPath}.manifest.json`;
+  const checksum = checksumFor(pluginPath);
+  const inferredName = inferNameFromFile(pluginFileName);
+  let current: Partial<PluginManifest> = {};
+
+  if (existsSync(manifestPath)) {
+    try {
+      current = JSON.parse(readFileSync(manifestPath, "utf8")) as Partial<PluginManifest>;
+    } catch {
+      current = {};
+    }
+  }
+
+  const manifest: PluginManifest = {
+    name: current.name?.trim() || inferredName,
+    version: current.version?.trim() || "1.0.0",
+    description: current.description?.trim() || `Plugin manifest for ${inferredName}`,
+    permissions:
+      Array.isArray(current.permissions) && current.permissions.length > 0
+        ? current.permissions.filter((p): p is string => typeof p === "string" && !!p.trim())
+        : ["plugin:runtime"],
+    checksum,
+  };
+
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  return manifestPath;
 }
 
 export const pluginsCommand: Command = {
@@ -102,10 +152,28 @@ export const pluginsCommand: Command = {
       };
     }
 
+    if (subcommand === "manifest:refresh") {
+      const plugins = listPlugins();
+      if (plugins.length === 0) {
+        return {
+          type: "plugins",
+          message: colors.dim("No plugins found to refresh manifests."),
+        };
+      }
+      const refreshed = plugins.map((plugin) => {
+        const manifestPath = refreshPluginManifest(plugin);
+        return `  - ${plugin} -> ${path.basename(manifestPath)}`;
+      });
+      return {
+        type: "plugins",
+        message: `${colors.success("✓")} Refreshed ${plugins.length} plugin manifest(s)\n${refreshed.join("\n")}`,
+      };
+    }
+
     return {
       type: "plugins",
       message: colors.error(
-        "Unknown plugins subcommand. Use: /plugins list | /plugins install <path> | /plugins remove <name>"
+        "Unknown plugins subcommand. Use: /plugins list | /plugins install <path> | /plugins remove <name> | /plugins manifest:refresh"
       ),
     };
   },

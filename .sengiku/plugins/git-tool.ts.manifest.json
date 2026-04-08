@@ -1,0 +1,7 @@
+{
+  "name": "git_tool",
+  "version": "2.0.0",
+  "description": "Git helper for read and guarded mutating operations",
+  "permissions": ["git:read", "git:stage", "git:commit", "git:push"],
+  "checksum": "02c3e8c44349bb8119624bbccf60992e9849e4c2a9cd62a4ca919ba56b3eefd7"
+}

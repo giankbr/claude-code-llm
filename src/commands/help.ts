@@ -13,7 +13,8 @@ ${colors.dim("Available commands:")}
   /help      - Show this message
   /clear     - Clear conversation history
   /tools     - List available tools
-  /plugins   - Manage plugins (list/install/remove)
+  /plugins   - Manage plugins (list/install/remove/manifest:refresh)
+  /mode      - Set mode (plan/execute/review)
   /init      - Create default SENGIKU.md file
   /docs      - Show tool documentation (run '/docs <tool>' or '/docs' for all)
   /memory    - Show/edit project memory

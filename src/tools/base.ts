@@ -23,6 +23,7 @@ export interface ToolResult {
 export interface ToolContext {
   workspaceRoot: string;
   permissionMode: PermissionMode;
+  correlationId?: string;
   agentId?: string;
   parentAgentId?: string;
   breadcrumbs?: AgentBreadcrumb[];

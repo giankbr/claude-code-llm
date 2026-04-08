@@ -26,6 +26,7 @@
   "scripts": {
     "prepare": "husky",
     "typecheck": "tsc --noEmit",
-    "commitlint": "commitlint --edit"
+    "commitlint": "commitlint --edit",
+    "eval": "bun run src/eval/index.ts"
   }
 }

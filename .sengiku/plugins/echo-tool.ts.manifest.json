@@ -1,0 +1,7 @@
+{
+  "name": "echo_tool",
+  "version": "1.0.0",
+  "description": "Echo input text for plugin loader validation",
+  "permissions": ["text:echo"],
+  "checksum": "1cbcf591e69199e0b46c50d03736b3a8cc785cfea8c9b2237bf027b260cc819a"
+}

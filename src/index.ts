@@ -20,13 +20,13 @@ import { autoSuggest } from "./suggestions";
 import { analytics } from "./analytics";
 import type { PermissionMode } from "./tools/base";
 import { evaluateToolExecution, type ExecutedToolEvent } from "./quality-gate";
+import { normalizeToolCallAlias, type TextToolCall } from "./tools/alias-map";
 
 const messages: GenericMessage[] = [];
 const SENGIKU_DIR = path.join(process.cwd(), ".sengiku");
 const SENGIKU_RULES_FILE = path.join(SENGIKU_DIR, "rules.md");
 const SENGIKU_MEMORY_FILE = path.join(SENGIKU_DIR, "memory.json");
 
-type TextToolCall = { name: string; arguments: Record<string, unknown> };
 type LearningMemory = {
   projectGoal: string;
   codingStyle: string[];
@@ -38,6 +38,10 @@ type LearningMemory = {
 
 function getSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getCorrelationId(): string {
+  return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function updateMemoryFromAnalytics(): void {
@@ -147,35 +151,6 @@ function isNoOpTextToolCall(call: TextToolCall): boolean {
     return true;
   }
   return false;
-}
-
-function normalizeTextToolCall(call: TextToolCall): TextToolCall {
-  const name = call.name.trim().toLowerCase();
-  if (name === "git_log") {
-    return {
-      name: "git_tool",
-      arguments: { ...call.arguments, action: "log" },
-    };
-  }
-  if (name === "git_status") {
-    return {
-      name: "git_tool",
-      arguments: { ...call.arguments, action: "status" },
-    };
-  }
-  if (name === "git_diff") {
-    return {
-      name: "git_tool",
-      arguments: { ...call.arguments, action: "diff" },
-    };
-  }
-  if (name === "git_branch") {
-    return {
-      name: "git_tool",
-      arguments: { ...call.arguments, action: "branch" },
-    };
-  }
-  return call;
 }
 
 function isUnknownToolResult(result: string): boolean {
@@ -361,7 +336,7 @@ function getContext() {
 async function main() {
   ensureLearningFiles();
   const sessionId = getSessionId();
-  const sessionPermissionMode: PermissionMode = "default";
+  let sessionPermissionMode: PermissionMode = "default";
   const context = getContext();
   printHeader(context);
 
@@ -403,6 +378,17 @@ async function main() {
         process.exit(0);
       }
 
+      if (result.type === "mode") {
+        const mode = result.meta?.mode;
+        if (mode === "plan") {
+          sessionPermissionMode = "plan";
+        } else if (mode === "review") {
+          sessionPermissionMode = "plan";
+        } else if (mode === "execute") {
+          sessionPermissionMode = "auto";
+        }
+      }
+
       continue;
     }
 
@@ -410,6 +396,7 @@ async function main() {
     const modelInput = buildModelInput(input);
     const requestedTargetDir = extractRequestedTargetDir(input);
     const controller = new AbortController();
+    const correlationId = getCorrelationId();
     const onSigint = () => controller.abort();
     process.once("SIGINT", onSigint);
     messages.push({
@@ -431,6 +418,7 @@ async function main() {
       for await (const token of streamResponse(messages, undefined, {
         signal: controller.signal,
         sessionId,
+        correlationId,
         permissionMode: sessionPermissionMode,
       })) {
 
@@ -512,7 +500,7 @@ async function main() {
 
         let unknownToolDetected = false;
         for (const rawCall of textToolCalls) {
-          const call = normalizeTextToolCall(rawCall);
+          const call = normalizeToolCallAlias(rawCall);
           if (isWriteOutsideRequestedTarget(call, requestedTargetDir)) {
             const target = requestedTargetDir || "(unknown)";
             const blockedPath =
@@ -535,6 +523,7 @@ async function main() {
             workspaceRoot: process.cwd(),
             permissionMode: sessionPermissionMode,
             sessionId,
+            correlationId,
             signal: controller.signal,
           });
           printToolResult(call.name, result, Date.now() - startedAt);
@@ -574,6 +563,7 @@ async function main() {
         for await (const token of streamResponse(messages, undefined, {
           signal: controller.signal,
           sessionId,
+          correlationId,
           permissionMode: sessionPermissionMode,
         })) {
           followUp += token;
@@ -599,6 +589,7 @@ async function main() {
         for await (const token of streamResponse(messages, undefined, {
           signal: controller.signal,
           sessionId,
+          correlationId,
           permissionMode: sessionPermissionMode,
         })) {
           retryResponse += token;
@@ -616,13 +607,14 @@ async function main() {
             hasPrintedToolSection = true;
           }
           for (const rawCall of retryToolCalls) {
-            const call = normalizeTextToolCall(rawCall);
+            const call = normalizeToolCallAlias(rawCall);
             const startedAt = Date.now();
             printToolCall(call.name, call.arguments);
             const result = await executeTool(call.name, call.arguments, {
               workspaceRoot: process.cwd(),
               permissionMode: sessionPermissionMode,
               sessionId,
+              correlationId,
               signal: controller.signal,
             });
             printToolResult(call.name, result, Date.now() - startedAt);
@@ -657,6 +649,7 @@ async function main() {
           for await (const token of streamResponse(messages, undefined, {
             signal: controller.signal,
             sessionId,
+            correlationId,
             permissionMode: sessionPermissionMode,
           })) {
             gatedResponse += token;

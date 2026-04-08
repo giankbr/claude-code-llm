@@ -11,6 +11,7 @@ import { configCommand } from "./config";
 import { docsCommand } from "./docs";
 import { initCommand } from "./init";
 import { pluginsCommand } from "./plugins";
+import { modeCommand } from "./mode";
 import { colors } from "../ui";
 
 const COMMANDS: Command[] = [
@@ -25,6 +26,7 @@ const COMMANDS: Command[] = [
   docsCommand,
   initCommand,
   pluginsCommand,
+  modeCommand,
 ];
 
 export function isCommand(input: string): boolean {

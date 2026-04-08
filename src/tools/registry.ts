@@ -12,6 +12,9 @@ import { analytics } from "../analytics";
 import { loadPluginTools } from "./loader";
 import path from "node:path";
 import { composeToolDescription } from "../tool-prompts";
+import { validateToolInput } from "./validate";
+import { evaluatePolicy } from "../policy";
+import { logger } from "../logger";
 
 export class ToolPermissionError extends Error {}
 export class ToolValidationError extends Error {}
@@ -122,41 +125,6 @@ function mapPseudoToolCall(
   return null;
 }
 
-const DISALLOWED_BASH_PATTERNS = [
-  /\bfind\b/,
-  /\bgrep\b/,
-  /\bcat\b/,
-  /\bhead\b/,
-  /\btail\b/,
-  /\bsed\b/,
-  /\bawk\b/,
-  /\becho\b/,
-];
-
-function isExplicitlyAllowedShellPattern(command: string): boolean {
-  return /explicitly required|explicitly instructed/i.test(command);
-}
-
-function validateStrictPolicy(
-  toolName: string,
-  input: Record<string, unknown>
-): string | null {
-  if (toolName !== "bash") {
-    return null;
-  }
-  const command = typeof input.command === "string" ? input.command : "";
-  if (!command.trim()) {
-    return "Policy blocked: missing bash command input.";
-  }
-  if (
-    DISALLOWED_BASH_PATTERNS.some((pattern) => pattern.test(command)) &&
-    !isExplicitlyAllowedShellPattern(command)
-  ) {
-    return "Policy blocked: bash command uses a disallowed utility. Use dedicated tools instead.";
-  }
-  return null;
-}
-
 async function runToolWithRetry(
   tool: Tool,
   input: Record<string, unknown>,
@@ -214,9 +182,19 @@ export async function executeTool(
   }
 
   try {
-    const policyViolation = validateStrictPolicy(effectiveName, effectiveInput);
-    if (policyViolation) {
-      throw new ToolPermissionError(policyViolation);
+    const validationResult = validateToolInput(tool, effectiveInput);
+    if (!validationResult.ok) {
+      throw new ToolValidationError(`Invalid ${effectiveName} input: ${validationResult.errors.join("; ")}`);
+    }
+
+    const policyDecision = evaluatePolicy(tool, effectiveInput, ctx.permissionMode);
+    if (!policyDecision.allowed) {
+      logger.warn("tool_policy_denied", {
+        tool: effectiveName,
+        reason: policyDecision.reason,
+        correlationId: ctx.correlationId,
+      });
+      throw new ToolPermissionError(policyDecision.reason || "Blocked by centralized policy engine");
     }
 
     const toolPermission = await tool.checkPermissions(effectiveInput, ctx);
@@ -246,6 +224,11 @@ export async function executeTool(
     }
 
     const result = await runToolWithRetry(tool, effectiveInput, ctx, DEFAULT_RETRY_CONFIG);
+    logger.info("tool_execute_success", {
+      tool: effectiveName,
+      correlationId: ctx.correlationId,
+      durationMs: Date.now() - startedAt,
+    });
 
     if (tool.onAfterExecute) {
       await tool.onAfterExecute(result, ctx);
@@ -254,10 +237,12 @@ export async function executeTool(
     analytics.record({
       toolName: effectiveName,
       sessionId,
+      correlationId: ctx.correlationId,
       agentId: ctx.agentId,
       startedAt,
       durationMs: Date.now() - startedAt,
       success: true,
+      policyAllowed: true,
       inputSize,
       outputSize: Buffer.from(result.output).byteLength,
     });
@@ -270,10 +255,12 @@ export async function executeTool(
         analytics.record({
           toolName: name,
           sessionId,
+          correlationId: ctx.correlationId,
           agentId: ctx.agentId,
           startedAt,
           durationMs: Date.now() - startedAt,
           success: true,
+          policyAllowed: true,
           inputSize,
           outputSize: Buffer.from(output).byteLength,
         });
@@ -285,11 +272,14 @@ export async function executeTool(
     analytics.record({
       toolName: effectiveName,
       sessionId,
+      correlationId: ctx.correlationId,
       agentId: ctx.agentId,
       startedAt,
       durationMs: Date.now() - startedAt,
       success: false,
       errorType: error instanceof Error ? error.name : "UnknownError",
+      policyAllowed: false,
+      policyReason: error instanceof Error ? error.message : String(error),
       inputSize,
       outputSize: Buffer.from(message).byteLength,
     });
@@ -298,4 +288,7 @@ export async function executeTool(
 }
 
 export type { Tool, ToolContext, PermissionMode } from "./base";
-export const TOOLS = getGenericTools();
+export async function getToolsSnapshot(): Promise<GenericTool[]> {
+  await initializeTools();
+  return getGenericTools();
+}

@@ -4,6 +4,7 @@ import path from "node:path";
 export interface ToolExecution {
   toolName: string;
   sessionId: string;
+  correlationId?: string;
   agentId?: string;
   startedAt: number;
   durationMs: number;
@@ -11,6 +12,8 @@ export interface ToolExecution {
   errorType?: string;
   inputSize: number;
   outputSize: number;
+  policyAllowed?: boolean;
+  policyReason?: string;
 }
 
 interface ToolSummary {

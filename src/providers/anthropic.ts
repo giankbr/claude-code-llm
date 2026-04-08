@@ -1,8 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, Tool } from "@anthropic-ai/sdk/resources/messages";
 import type { Provider, GenericMessage, GenericTool } from "./base";
-import { executeTool, getGenericTools } from "../tools/registry";
-import { getSystemPrompt } from "../prompts";
+import { executeTool, getToolsSnapshot } from "../tools/registry";
+import { getSystemPromptForTask } from "../prompts";
+import { normalizeToolCallAlias } from "../tools/alias-map";
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -14,13 +15,15 @@ const MAX_TOOL_DEPTH = 10;
 export class AnthropicProvider implements Provider {
   async *streamResponse(
     messages: GenericMessage[],
-    tools: GenericTool[] = getGenericTools(),
+    tools?: GenericTool[],
     options?: {
       signal?: AbortSignal;
       sessionId?: string;
+      correlationId?: string;
       permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
     }
   ): AsyncGenerator<string> {
+    const resolvedTools = tools ?? (await getToolsSnapshot());
     // Convert generic messages to Anthropic format
     const anthropicMessages: MessageParam[] = messages.map((m) => ({
       role: m.role,
@@ -28,7 +31,7 @@ export class AnthropicProvider implements Provider {
     }));
 
     // Convert generic tools to Anthropic format
-    const anthropicTools: Tool[] = tools.map((t) => ({
+    const anthropicTools: Tool[] = resolvedTools.map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: t.input_schema as any,
@@ -45,6 +48,7 @@ export class AnthropicProvider implements Provider {
     options?: {
       signal?: AbortSignal;
       sessionId?: string;
+      correlationId?: string;
       permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
     }
   ): AsyncGenerator<string> {
@@ -65,7 +69,9 @@ export class AnthropicProvider implements Provider {
     const stream = await client.messages.stream({
       model: MODEL,
       max_tokens: 2048,
-      system: getSystemPrompt(),
+      system: getSystemPromptForTask(
+        [...genericMessages].reverse().find((m) => m.role === "user")?.content || ""
+      ),
       messages: anthropicMessages,
       tools: anthropicTools,
     });
@@ -105,39 +111,44 @@ export class AnthropicProvider implements Provider {
 
       // Process each tool call
       for (const toolCall of toolCalls) {
-        yield `[TOOL:${toolCall.name}:${JSON.stringify(toolCall.input)}]`;
+        const normalized = normalizeToolCallAlias({
+          name: toolCall.name,
+          arguments: toolCall.input,
+        });
+        yield `[TOOL:${normalized.name}:${JSON.stringify(normalized.arguments)}]`;
 
-        const result = await executeTool(toolCall.name, toolCall.input, {
+        const result = await executeTool(normalized.name, normalized.arguments, {
           workspaceRoot: process.cwd(),
           permissionMode: options?.permissionMode ?? "default",
           sessionId: options?.sessionId,
+          correlationId: options?.correlationId,
           signal: options?.signal,
         });
         yield `[RESULT:${result}]`;
 
-        // Append tool result as a user message with both text and tool_result
-        genericMessages.push({
-          role: "user",
-          content: `Tool ${toolCall.name} returned: ${result}`,
-        });
+        genericMessages.push({ role: "user", content: `Tool ${normalized.name} returned: ${result}` });
       }
 
-      // Update anthropic messages for recursion
       const updatedAnthropicMessages: MessageParam[] = [...anthropicMessages];
 
-      // Add new messages from generic
-      for (let i = anthropicMessages.length; i < genericMessages.length; i++) {
-        const msg = genericMessages[i];
-        if (!msg) {
-          continue;
-        }
-        updatedAnthropicMessages.push({
-          role: msg.role as any,
-          content: msg.content,
-        });
-      }
+      updatedAnthropicMessages.push({
+        role: "assistant",
+        content: toolCalls.map((call) => ({
+          type: "tool_use",
+          id: call.id,
+          name: normalizeToolCallAlias({ name: call.name, arguments: {} }).name,
+          input: call.input,
+        })) as any,
+      });
+      updatedAnthropicMessages.push({
+        role: "user",
+        content: toolCalls.map((call, index) => ({
+          type: "tool_result",
+          tool_use_id: call.id,
+          content: genericMessages[genericMessages.length - toolCalls.length + index]?.content || "",
+        })) as any,
+      });
 
-      // Recursively stream the continuation
       yield* this._streamResponseInternal(
         updatedAnthropicMessages,
         anthropicTools,
@@ -146,7 +157,6 @@ export class AnthropicProvider implements Provider {
         options
       );
     } else {
-      // Update the generic messages array with the final response
       genericMessages.push({
         role: "assistant",
         content: fullResponse,

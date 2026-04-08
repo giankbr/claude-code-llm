@@ -2,7 +2,8 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat";
 import type { Provider, GenericMessage, GenericTool } from "./base";
 import { executeTool } from "../tools/registry";
-import { getSystemPrompt } from "../prompts";
+import { getSystemPromptForTask } from "../prompts";
+import { normalizeToolCallAlias } from "../tools/alias-map";
 const MAX_TOOL_DEPTH = 10;
 
 function parseToolArguments(rawArguments: string): Record<string, unknown> {
@@ -69,6 +70,7 @@ export class OpenAICompatProvider implements Provider {
     options?: {
       signal?: AbortSignal;
       sessionId?: string;
+      correlationId?: string;
       permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
     }
   ): AsyncGenerator<string> {
@@ -81,11 +83,15 @@ export class OpenAICompatProvider implements Provider {
     options?: {
       signal?: AbortSignal;
       sessionId?: string;
+      correlationId?: string;
       permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
     }
   ): AsyncGenerator<string> {
+    const lastUserPrompt = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    const isGemma = /gemma/i.test(this.model);
+    const maxTokens = isGemma ? 1536 : 2048;
     const openaiMessages: any[] = [
-      { role: "system", content: getSystemPrompt() },
+      { role: "system", content: getSystemPromptForTask(lastUserPrompt) },
       ...messages.map((m) => ({
         role: m.role,
         content: m.content,
@@ -126,7 +132,7 @@ export class OpenAICompatProvider implements Provider {
         model: this.model,
         messages: openaiMessages as ChatCompletionMessageParam[],
         stream: true,
-        max_tokens: 2048,
+        max_tokens: maxTokens,
         tool_choice: "auto",
         ...(openaiTools.length > 0 && { tools: openaiTools }),
       } as any)) as unknown as AsyncIterable<any>;
@@ -195,11 +201,16 @@ export class OpenAICompatProvider implements Provider {
       });
 
       for (const toolCall of toolCalls) {
-        yield `[TOOL:${toolCall.name}:${JSON.stringify(toolCall.input)}]`;
-        const result = await executeTool(toolCall.name, toolCall.input, {
+        const normalized = normalizeToolCallAlias({
+          name: toolCall.name,
+          arguments: toolCall.input,
+        });
+        yield `[TOOL:${normalized.name}:${JSON.stringify(normalized.arguments)}]`;
+        const result = await executeTool(normalized.name, normalized.arguments, {
           workspaceRoot: process.cwd(),
           permissionMode: options?.permissionMode ?? "default",
           sessionId: options?.sessionId,
+          correlationId: options?.correlationId,
           signal: options?.signal,
         });
         yield `[RESULT:${result}]`;
