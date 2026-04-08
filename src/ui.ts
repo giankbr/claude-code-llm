@@ -34,9 +34,9 @@ function truncatePath(filePath: string, maxLen: number = 30): string {
 
 export function printHeader(context?: { provider: string; model: string; cwd?: string }) {
   const width = getTerminalWidth();
-
-  // Build context string
-  let contextStr = "Sengiku AI CLI";
+  const innerWidth = width - 2;
+  const title = "Sengiku Code";
+  let contextStr = title;
   if (context) {
     contextStr += " · " + context.model;
     if (context.provider !== "anthropic") {
@@ -47,34 +47,38 @@ export function printHeader(context?: { provider: string; model: string; cwd?: s
     }
   }
 
-  // Adjust context string to fit
-  if (contextStr.length > width - 6) {
-    contextStr = contextStr.substring(0, width - 9) + "…";
+  if (contextStr.length > innerWidth - 4) {
+    contextStr = contextStr.substring(0, innerWidth - 7) + "…";
   }
 
-  const padding = Math.max(1, Math.floor((width - contextStr.length - 4) / 2));
-  const leftPad = " ".repeat(padding);
-  const rightPad = " ".repeat(width - contextStr.length - 4 - padding);
-
-  const topBorder = "╭" + "─".repeat(width - 2) + "╮";
-  const contentLine = "│" + leftPad + contextStr + rightPad + "│";
-  const bottomBorder = "╰" + "─".repeat(width - 2) + "╯";
+  const topBorder = "╭" + "─".repeat(innerWidth) + "╮";
+  const titlePad = Math.max(0, innerWidth - contextStr.length);
+  const titleLine = "│" + contextStr + " ".repeat(titlePad) + "│";
+  const hint = "Type /help for commands, /exit to quit";
+  const hintPad = Math.max(0, innerWidth - hint.length);
+  const hintLine = "│" + colors.dim(hint) + " ".repeat(hintPad) + "│";
+  const bottomBorder = "╰" + "─".repeat(innerWidth) + "╯";
 
   console.log(colors.dim(topBorder));
-  console.log(colors.dim(contentLine));
+  console.log(colors.dim(titleLine));
+  console.log(colors.dim(hintLine));
   console.log(colors.dim(bottomBorder));
   console.log();
 }
 
 export function printLabel(role: "Human" | "Assistant", badge?: string) {
-  const label = role === "Human" ? colors.user("Human") : colors.assistant("Assistant");
+  const label = role === "Human" ? colors.user("You") : colors.assistant("Assistant");
   const badgeStr = badge ? colors.badge(" · " + badge) : "";
   console.log(label + badgeStr);
 }
 
+export function promptSymbol(): string {
+  return colors.user("❯ ");
+}
+
 export function printToolCall(name: string, input: Record<string, unknown>) {
-  const inputStr = JSON.stringify(input).replace(/"/g, "'").substring(0, 100);
-  const tooltip = inputStr.length > 100 ? inputStr.substring(0, 97) + "…" : inputStr;
+  const fullInput = JSON.stringify(input).replace(/"/g, "'");
+  const tooltip = fullInput.length > 110 ? fullInput.substring(0, 107) + "…" : fullInput;
   console.log(colors.tool("⏺") + " " + colors.tool(name) + pc.dim(`(${tooltip})`));
   console.log(colors.dim("  └─ Running..."));
 }
@@ -89,11 +93,11 @@ export function printToolResult(name: string, result: string, timeMs?: number) {
   console.log(colors.success("✓") + " " + colors.success(name) + timing);
 
   for (const line of displayLines) {
-    console.log(colors.dim("│ ") + line);
+    console.log(colors.dim("  │ ") + line);
   }
 
   if (hasMore) {
-    console.log(colors.dim(`│ ... ${lines.length - maxLines} more lines`));
+    console.log(colors.dim(`  │ ... ${lines.length - maxLines} more lines`));
   }
 
   console.log();
@@ -112,10 +116,10 @@ function highlightCode(code: string, lang: string): string {
 
 function renderCodeBlock(code: string, lang: string): string {
   const width = getTerminalWidth();
-  const langLabel = lang ? `${lang}` : "";
-  const borderStart = "╭─ " + langLabel;
+  const langLabel = lang ? ` ${lang} ` : " code ";
+  const borderStart = "╭" + "─".repeat(2) + langLabel;
   const borderFill = Math.max(0, width - borderStart.length - 1);
-  const topBorder = borderStart + "─".repeat(borderFill);
+  const topBorder = borderStart + "─".repeat(borderFill) + "╮";
   const bottomBorder = "╰" + "─".repeat(width - 2) + "╯";
 
   const highlighted = highlightCode(code.trim(), lang);
@@ -191,5 +195,5 @@ export function renderMarkdown(text: string): string {
     i++;
   }
 
-  return output;
+  return output.trimEnd();
 }

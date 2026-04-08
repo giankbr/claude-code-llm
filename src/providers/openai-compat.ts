@@ -40,11 +40,10 @@ export class OpenAICompatProvider implements Provider {
         process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
       this.model = process.env.OLLAMA_MODEL || "llama3.2";
       this.client = new OpenAI({
-        apiKey: "ollama", // dummy key, Ollama doesn't check it
+        apiKey: "ollama",
         baseURL,
       });
     } else {
-      // openai-compat mode
       const baseURL = process.env.OPENAI_BASE_URL;
       const apiKey = process.env.OPENAI_API_KEY;
       const model = process.env.OPENAI_MODEL;
@@ -74,13 +73,14 @@ export class OpenAICompatProvider implements Provider {
     messages: GenericMessage[],
     tools: GenericTool[]
   ): AsyncGenerator<string> {
-    // Convert generic messages to OpenAI format
-    const openaiMessages: ChatCompletionMessageParam[] = messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    const openaiMessages: any[] = [
+      { role: "system", content: getSystemPrompt() },
+      ...messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+    ];
 
-    // Convert generic tools to OpenAI format
     const openaiTools = tools.map((tool) => ({
       type: "function" as const,
       function: {
@@ -94,95 +94,95 @@ export class OpenAICompatProvider implements Provider {
       },
     }));
 
-    let fullResponse = "";
-    let toolCalls: Array<{
-      id: string;
-      name: string;
-      rawArguments: string;
-      input: Record<string, unknown>;
-    }> = [];
+    while (true) {
+      let fullResponse = "";
+      let toolCalls: Array<{
+        id: string;
+        name: string;
+        rawArguments: string;
+        input: Record<string, unknown>;
+      }> = [];
 
-    const stream = (await this.client.chat.completions.create({
-      model: this.model,
-      messages: openaiMessages,
-      stream: true,
-      max_tokens: 2048,
-      system: getSystemPrompt(),
-      tool_choice: "auto",
-      ...(openaiTools.length > 0 && { tools: openaiTools }),
-    } as any)) as unknown as AsyncIterable<any>;
+      const stream = (await this.client.chat.completions.create({
+        model: this.model,
+        messages: openaiMessages as ChatCompletionMessageParam[],
+        stream: true,
+        max_tokens: 2048,
+        tool_choice: "auto",
+        ...(openaiTools.length > 0 && { tools: openaiTools }),
+      } as any)) as unknown as AsyncIterable<any>;
 
-    for await (const chunk of stream) {
-      if (!chunk.choices[0]) continue;
+      for await (const chunk of stream) {
+        if (!chunk.choices[0]) continue;
 
-      const delta = chunk.choices[0].delta;
+        const delta = chunk.choices[0].delta;
 
-      if (delta.content) {
-        fullResponse += delta.content;
-        yield delta.content;
-      }
+        if (delta.content) {
+          fullResponse += delta.content;
+          yield delta.content;
+        }
 
-      if (delta.tool_calls) {
-        for (const toolCall of delta.tool_calls) {
-          // Find or create tool call entry
-          let toolCallEntry = toolCalls.find((tc) => tc.id === toolCall.id);
-          if (!toolCallEntry) {
-            toolCallEntry = {
-              id: toolCall.id || "",
-              name: toolCall.function?.name || "",
-              rawArguments: "",
-              input: {},
-            };
-            toolCalls.push(toolCallEntry);
-          }
+        if (delta.tool_calls) {
+          for (const toolCall of delta.tool_calls) {
+            const toolCallId =
+              toolCall.id || `tool_${toolCall.index ?? 0}_${toolCalls.length}`;
+            let toolCallEntry = toolCalls.find((tc) => tc.id === toolCallId);
+            if (!toolCallEntry) {
+              toolCallEntry = {
+                id: toolCallId,
+                name: toolCall.function?.name || "",
+                rawArguments: "",
+                input: {},
+              };
+              toolCalls.push(toolCallEntry);
+            }
 
-          if (toolCall.function?.name) {
-            toolCallEntry.name = toolCall.function.name;
-          }
-
-          if (toolCall.function?.arguments) {
-            // Streaming tool arguments often arrive as partial JSON chunks.
-            toolCallEntry.rawArguments += toolCall.function.arguments;
+            if (toolCall.function?.name) {
+              toolCallEntry.name = toolCall.function.name;
+            }
+            if (toolCall.function?.arguments) {
+              toolCallEntry.rawArguments += toolCall.function.arguments;
+            }
           }
         }
       }
-    }
 
-    // Parse complete tool arguments after stream ends.
-    for (const toolCall of toolCalls) {
-      toolCall.input = parseToolArguments(toolCall.rawArguments);
-    }
+      for (const toolCall of toolCalls) {
+        toolCall.input = parseToolArguments(toolCall.rawArguments);
+      }
 
-    // Process tool calls if any
-    if (toolCalls.length > 0) {
-      // Append assistant message to generic messages
-      messages.push({
+      if (toolCalls.length === 0) {
+        messages.push({
+          role: "assistant",
+          content: fullResponse,
+        });
+        break;
+      }
+
+      openaiMessages.push({
         role: "assistant",
-        content: fullResponse,
+        content: fullResponse || "",
+        tool_calls: toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: {
+            name: tc.name,
+            arguments: tc.rawArguments || JSON.stringify(tc.input),
+          },
+        })),
       });
 
-      // Process each tool call
       for (const toolCall of toolCalls) {
         yield `[TOOL:${toolCall.name}:${JSON.stringify(toolCall.input)}]`;
-
         const result = await executeTool(toolCall.name, toolCall.input);
         yield `[RESULT:${result}]`;
 
-        // Append tool result to messages
-        messages.push({
-          role: "user",
-          content: `Tool ${toolCall.name} returned: ${result}`,
+        openaiMessages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: result,
         });
       }
-
-      // Recursively stream the continuation
-      yield* this._streamResponseInternal(messages, tools);
-    } else {
-      // Update messages with the final response
-      messages.push({
-        role: "assistant",
-        content: fullResponse,
-      });
     }
   }
 }

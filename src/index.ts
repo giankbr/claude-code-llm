@@ -1,10 +1,92 @@
 import inquirer from "inquirer";
 import type { GenericMessage } from "./providers/base";
 import { streamResponse } from "./client";
-import { colors, spinner, printHeader, printLabel, printToolCall, printToolResult, renderMarkdown } from "./ui";
+import {
+  colors,
+  spinner,
+  printHeader,
+  printToolCall,
+  printToolResult,
+  renderMarkdown,
+  promptSymbol,
+} from "./ui";
 import { isCommand, handleCommand } from "./commands";
+import { executeTool } from "./tools";
 
 const messages: GenericMessage[] = [];
+
+type TextToolCall = { name: string; arguments: Record<string, unknown> };
+
+function parseLooseJsonObject(input: string): Record<string, unknown> | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    const normalized = trimmed
+      .replace(/'/g, "\"")
+      .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
+
+    try {
+      return JSON.parse(normalized) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function collectObjectLikeSnippets(text: string): string[] {
+  const snippets = new Set<string>();
+
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      snippets.add(trimmed);
+    }
+  }
+
+
+  const blocks = text.match(/```(?:json|javascript|js)?\s*([\s\S]*?)```/gi) || [];
+  for (const block of blocks) {
+    const inner = block
+      .replace(/^```(?:json|javascript|js)?\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
+    if (inner.startsWith("{") && inner.endsWith("}")) {
+      snippets.add(inner);
+    }
+  }
+
+  return Array.from(snippets);
+}
+
+function extractTextToolCalls(text: string): TextToolCall[] {
+  const calls: TextToolCall[] = [];
+  const snippets = collectObjectLikeSnippets(text);
+
+  for (const snippet of snippets) {
+    const parsed = parseLooseJsonObject(snippet) as
+      | { name?: unknown; arguments?: unknown }
+      | null;
+    if (
+      parsed &&
+      typeof parsed.name === "string" &&
+      parsed.arguments &&
+      typeof parsed.arguments === "object"
+    ) {
+      calls.push({
+        name: parsed.name,
+        arguments: parsed.arguments as Record<string, unknown>,
+      });
+    }
+  }
+
+  return calls;
+}
 
 function isExitPromptError(error: unknown): boolean {
   if (!(error instanceof Error)) {
@@ -51,15 +133,14 @@ function getContext() {
 async function main() {
   const context = getContext();
   printHeader(context);
-  console.log(colors.dim("Type /help for commands, /exit to quit\n"));
 
-  // eslint-disable-next-line no-constant-condition
+
   while (true) {
     const { input } = await inquirer.prompt([
       {
         type: "input",
         name: "input",
-        message: colors.user(">"),
+        message: promptSymbol(),
         default: "",
       },
     ]);
@@ -68,11 +149,9 @@ async function main() {
       continue;
     }
 
-    console.log();
 
-    // Check for slash commands
     if (isCommand(input)) {
-      const result = handleCommand(input, messages);
+      const result = await handleCommand(input, messages);
       if (result.message) {
         console.log(result.message);
       }
@@ -90,18 +169,13 @@ async function main() {
       continue;
     }
 
-    // Print human label and input
-    printLabel("Human");
-    console.log(colors.dim("  " + input));
-    console.log();
 
-    // Add user message to history
     messages.push({
       role: "user",
       content: input,
     });
 
-    // Stream response
+
     let fullResponse = "";
     let currentToolCall: { name: string; input: Record<string, unknown> } | null = null;
     const toolStartTime = Date.now();
@@ -110,7 +184,7 @@ async function main() {
 
     try {
       for await (const token of streamResponse(messages)) {
-        // Check for tool call markers
+
         if (token.startsWith("[TOOL:")) {
           spinner.stop();
           const match = token.match(/\[TOOL:([^:]+):(.+)\]/);
@@ -121,7 +195,7 @@ async function main() {
               currentToolCall = { name, input: JSON.parse(inputStr) };
               printToolCall(name, currentToolCall.input);
             } catch {
-              // Skip if JSON parse fails
+
             }
           }
           continue;
@@ -137,25 +211,69 @@ async function main() {
           continue;
         }
 
-        // Accumulate response text
+
         fullResponse += token;
       }
 
       spinner.stop();
+      let assistantText = fullResponse;
+      let fallbackRound = 0;
+      const maxFallbackRounds = 5;
 
-      // Print rendered markdown response
-      printLabel("Assistant", context.model);
-      console.log(renderMarkdown(fullResponse));
+      while (true) {
+        const textToolCalls = extractTextToolCalls(assistantText);
+        messages.push({
+          role: "assistant",
+          content: assistantText,
+        });
 
-      // Add assistant response to messages
-      messages.push({
-        role: "assistant",
-        content: fullResponse,
-      });
+        if (textToolCalls.length === 0) {
+          console.log(renderMarkdown(assistantText));
+          console.log();
+          break;
+        }
+
+        if (fallbackRound === 0) {
+          console.log(
+            colors.dim("Detected textual tool calls from model, executing fallback...\n")
+          );
+        }
+
+        for (const call of textToolCalls) {
+          const startedAt = Date.now();
+          printToolCall(call.name, call.arguments);
+          const result = await executeTool(call.name, call.arguments);
+          printToolResult(call.name, result, Date.now() - startedAt);
+
+          messages.push({
+            role: "user",
+            content: `Tool ${call.name} returned: ${result}`,
+          });
+        }
+
+        fallbackRound += 1;
+        if (fallbackRound >= maxFallbackRounds) {
+          console.log(colors.dim("Stopped fallback after max rounds.\n"));
+          break;
+        }
+
+        let followUp = "";
+        spinner.start("Finalizing...");
+        for await (const token of streamResponse(messages)) {
+          followUp += token;
+        }
+        spinner.stop();
+
+        if (!followUp.trim()) {
+          break;
+        }
+
+        assistantText = followUp;
+      }
     } catch (error) {
       spinner.stop();
       console.log(colors.error(`\n${getReadableError(error)}\n`));
-      // Remove the user message if there was an error
+
       if (messages[messages.length - 1]?.role === "user") {
         messages.pop();
       }
