@@ -195,6 +195,50 @@ async function repairArgsWithModelCall(
 
   let repairPrompt = "";
 
+  if (toolName === "edit_file") {
+    const needFind = missing.includes("find");
+    const needReplace = missing.includes("replace");
+    const filePath = args.path as string | undefined;
+    if ((needFind || needReplace) && filePath) {
+      let currentContent = "";
+      try {
+        const resolvedPath = filePath.startsWith("/")
+          ? filePath
+          : `${process.cwd()}/${filePath}`;
+        currentContent = await Bun.file(resolvedPath).text();
+      } catch {
+        currentContent = "";
+      }
+      if (!currentContent) return { repaired: args, wasRepaired: false };
+
+      const editPrompt =
+        `User wants to: "${userRequest}"\n\n` +
+        `Current file (${filePath}):\n${currentContent}\n\n` +
+        `Provide ONLY the complete updated file content with all changes applied. No explanation, no markdown fences:`;
+      try {
+        const editResponse = await (client.chat.completions.create as Function)({
+          model,
+          messages: [{ role: "user", content: editPrompt }],
+          max_tokens: 4096,
+          stream: false,
+        });
+        const newContent: string =
+          editResponse?.choices?.[0]?.message?.content?.trim() ?? "";
+        if (!newContent) return { repaired: args, wasRepaired: false };
+        const cleaned = newContent
+          .replace(/^```[a-z]*\n?/i, "")
+          .replace(/```\s*$/i, "")
+          .trim();
+        return {
+          repaired: { ...args, find: currentContent, replace: cleaned },
+          wasRepaired: true,
+        };
+      } catch {
+        return { repaired: args, wasRepaired: false };
+      }
+    }
+  }
+
   // read_file: almost always reading the last file that was written
   if (toolName === "read_file" || toolName === "list_dir") {
     if (lastWrittenPath) {
