@@ -1,6 +1,6 @@
 import type { GenericMessage } from "../providers/base";
 
-export type CommandResultType = "clear" | "help" | "exit" | "doctor" | "memory" | "tools" | "unknown";
+export type CommandResultType = "clear" | "help" | "exit" | "doctor" | "memory" | "tools" | "analytics" | "config" | "docs" | "unknown";
 
 export interface CommandResult {
   type: CommandResultType;

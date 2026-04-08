@@ -6,6 +6,9 @@ import { exitCommand } from "./exit";
 import { doctorCommand } from "./doctor";
 import { memoryCommand } from "./memory";
 import { toolsCommand } from "./tools";
+import { analyticsCommand } from "./analytics";
+import { configCommand } from "./config";
+import { docsCommand } from "./docs";
 import { colors } from "../ui";
 
 const COMMANDS: Command[] = [
@@ -15,6 +18,9 @@ const COMMANDS: Command[] = [
   doctorCommand,
   memoryCommand,
   toolsCommand,
+  analyticsCommand,
+  configCommand,
+  docsCommand,
 ];
 
 export function isCommand(input: string): boolean {

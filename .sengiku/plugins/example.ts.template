@@ -1,0 +1,91 @@
+import type { Tool, ToolContext, PermissionDecision, ToolResult } from "../../src/tools/base";
+
+/**
+ * Example plugin tool template
+ *
+ * To use this:
+ * 1. Copy this file: cp .sengiku/plugins/example.ts.template .sengiku/plugins/my-tool.ts
+ * 2. Edit my-tool.ts with your implementation
+ * 3. Restart Sengiku Code — plugin will auto-load
+ *
+ * Plugin tools have full access to:
+ * - ToolContext (permissions, agent context, session tracking)
+ * - Error handling (onError hook for recovery)
+ * - Analytics (tool execution is tracked automatically)
+ * - Lifecycle hooks (before/after execution)
+ */
+
+export default {
+  name: "example",
+  description: "Example plugin tool - replace with your implementation",
+
+  input_schema: {
+    type: "object",
+    properties: {
+      message: {
+        type: "string",
+        description: "A test message",
+      },
+    },
+    required: ["message"],
+  },
+
+  isReadOnly(): boolean {
+    return true;  // true = read-only, false = can modify workspace
+  },
+
+  isDestructive(): boolean {
+    return false;  // true = requires user confirmation
+  },
+
+  isConcurrencySafe(): boolean {
+    return true;  // true = can run in parallel with other tools
+  },
+
+  maxResultSizeChars: 10_000,  // auto-truncate at this size
+  version: "1.0.0",
+  tags: ["example", "plugin"],  // for organization/filtering
+
+  async checkPermissions(
+    input: Record<string, unknown>,
+    ctx
+  ): Promise<PermissionDecision> {
+    const message = input.message as string;
+    if (!message?.trim()) {
+      return { allowed: false, reason: "Missing message" };
+    }
+    return { allowed: true };
+  },
+
+  async execute(
+    input: Record<string, unknown>,
+    ctx: ToolContext
+  ): Promise<ToolResult> {
+    const message = input.message as string;
+    return {
+      output: `Echo: ${message}`,
+      format: "text",
+    };
+  },
+
+  // Optional lifecycle hooks
+
+  async onBeforeExecute(input, ctx) {
+    // Called before tool execution
+    // Use for setup, logging, validation
+    console.log(`[example] Running with session ${ctx.sessionId}`);
+  },
+
+  async onAfterExecute(result, ctx) {
+    // Called after successful execution
+    // Use for cleanup, logging
+    console.log(`[example] Completed, output size: ${result.output.length}`);
+  },
+
+  async onError(error, ctx) {
+    // Called on execution error
+    // Return ToolResult to recover, or null to re-throw
+    console.error(`[example] Error: ${error.message}`);
+    return null;  // re-throw error
+  },
+} as Tool;

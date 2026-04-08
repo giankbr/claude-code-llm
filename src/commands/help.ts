@@ -10,12 +10,15 @@ export const helpCommand: Command = {
       type: "help",
       message: `
 ${colors.dim("Available commands:")}
-  /help   - Show this message
-  /clear  - Clear conversation history
-  /tools  - List available tools
-  /memory - Show/edit project memory
-  /doctor - Check runtime/provider/tooling health
-  /exit   - Exit the REPL
+  /help      - Show this message
+  /clear     - Clear conversation history
+  /tools     - List available tools
+  /docs      - Show tool documentation (run '/docs <tool>' or '/docs' for all)
+  /memory    - Show/edit project memory
+  /analytics - Show tool usage analytics
+  /config    - Configure Sengiku Code (permissions, settings)
+  /doctor    - Check runtime/provider/tooling health
+  /exit      - Exit the REPL
       `.trim(),
     };
   },
