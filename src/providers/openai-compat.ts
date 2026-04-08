@@ -584,31 +584,46 @@ export class OpenAICompatProvider implements Provider {
         .filter((toolCall) => isValidToolName(toolCall.name));
 
       if (validToolCalls.length === 0) {
-        const claimsAction =
-          /\b(done|selesai|sudah|berhasil|successfully|updated|created|added|changed|improved|enhanced|modified|replaced|inserted|ditambahkan|diubah|diganti|diperbaiki|I've|Here's what)\b/i.test(
+        const userWantsFileChange =
+          !!lastMentionedFilePath &&
+          messages.some(
+            (m) =>
+              m.role === "user" &&
+              /\b(updat|chang|modif|improv|add|edit|creat|buat|ubah|ganti|tambah|perbaiki|redesign|refactor|fix|make|set|switch|all page|proceed|yes|ok|gas|lanjut)\b/i.test(
+                m.content
+              )
+          );
+        // Also catch when model describes UI changes (any verb form)
+        const modelDescribesChanges =
+          /\b(updat|chang|add|improv|enhanc|modif|replac|insert|creat|redesign|refactor|sudah|berhasil|ditambah|diubah|diperbaiki|I'll|I'm|Let me|Here's)\b/i.test(
             fullResponse
           ) &&
-          (
-            /\b(file|section|styling|css|html|component|layout|footer|header|hero|card|button|font|color|gradient|animation)\b/i.test(fullResponse) ||
-            !!lastMentionedFilePath
+          /\b(file|section|page|styl|css|html|layout|footer|header|hero|card|button|font|color|gradient|animat|theme|design|component)\b/i.test(
+            fullResponse
           );
-        if (claimsAction && depth < MAX_TOOL_DEPTH - 1) {
+
+        const shouldRetry =
+          (userWantsFileChange || modelDescribesChanges) &&
+          depth < MAX_TOOL_DEPTH - 2;
+
+        if (shouldRetry) {
           depth += 1;
-          const changeDescription = fullResponse.slice(0, 500);
+          const changeDescription = fullResponse.slice(0, 600);
           openaiMessages.push(
             { role: "assistant", content: fullResponse },
             {
               role: "user",
               content:
-                `System feedback: You described these changes but did NOT call any tool:\n` +
-                `"${changeDescription}"\n\n` +
-                `NONE of these changes were applied to the file. You MUST call tools to modify files.\n` +
+                `System feedback: You responded with text but did NOT call any tool. ` +
+                `The file has NOT been modified.\n\n` +
+                `Your planned changes:\n"${changeDescription}"\n\n` +
                 (lastMentionedFilePath
-                  ? `Target file: ${lastMentionedFilePath}\n`
+                  ? `Target file: ${lastMentionedFilePath}\n\n`
                   : "") +
-                `Step 1: Call read_file to get current content.\n` +
-                `Step 2: Call edit_file with path, find (exact text from file), and replace (new text).\n` +
-                `Do it NOW.`,
+                `You MUST call tools to actually modify files. Do this NOW:\n` +
+                `1. Call read_file({"path": "${lastMentionedFilePath || "index.html"}"}) to read current content\n` +
+                `2. Call edit_file({"path": "${lastMentionedFilePath || "index.html"}", "find": "<exact old text>", "replace": "<new text>"}) to apply changes\n` +
+                `Do NOT respond with text. Call the tools immediately.`,
             }
           );
           continue;
