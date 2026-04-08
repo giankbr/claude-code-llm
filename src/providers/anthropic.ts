@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, Tool } from "@anthropic-ai/sdk/resources/messages";
-import { Provider, GenericMessage, GenericTool } from "./base";
+import type { Provider, GenericMessage, GenericTool } from "./base";
 import { TOOLS, executeTool } from "../tools";
 import { getSystemPrompt } from "../prompts";
 
@@ -96,16 +96,14 @@ export class AnthropicProvider implements Provider {
       }
 
       // Update anthropic messages for recursion
-      const updatedAnthropicMessages: MessageParam[] = anthropicMessages.map(
-        (m, i) => {
-          if (i < anthropicMessages.length) return m;
-          return { role: genericMessages[i]?.role as any, content: genericMessages[i]?.content };
-        }
-      );
+      const updatedAnthropicMessages: MessageParam[] = [...anthropicMessages];
 
       // Add new messages from generic
       for (let i = anthropicMessages.length; i < genericMessages.length; i++) {
         const msg = genericMessages[i];
+        if (!msg) {
+          continue;
+        }
         updatedAnthropicMessages.push({
           role: msg.role as any,
           content: msg.content,

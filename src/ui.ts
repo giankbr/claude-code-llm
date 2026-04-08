@@ -1,10 +1,11 @@
 import pc from "picocolors";
 import ora from "ora";
-import { marked } from "marked";
 import highlight from "cli-highlight";
+import os from "os";
 
 export { pc };
 
+// Color palette matching Claude Code
 export const colors = {
   user: (text: string) => pc.cyan(text),
   assistant: (text: string) => pc.green(text),
@@ -12,76 +13,132 @@ export const colors = {
   dim: (text: string) => pc.dim(text),
   error: (text: string) => pc.red(text),
   label: (text: string) => pc.bold(pc.cyan(text)),
+  badge: (text: string) => pc.dim(text),
+  success: (text: string) => pc.green(text),
 };
 
 export const spinner = ora();
 
-export function printHeader() {
-  const title = "Sengiku AI CLI";
-  const line = "─".repeat(title.length + 4);
-  console.log(colors.dim(`╭${line}╮`));
-  console.log(colors.dim(`│ ${title} │`));
-  console.log(colors.dim(`╰${line}╯`));
+function getTerminalWidth(): number {
+  return Math.max(process.stdout.columns || 80, 60);
+}
+
+function truncatePath(filePath: string, maxLen: number = 30): string {
+  const home = os.homedir();
+  let displayPath = filePath.replace(home, "~");
+  if (displayPath.length > maxLen) {
+    displayPath = "…" + displayPath.substring(displayPath.length - (maxLen - 1));
+  }
+  return displayPath;
+}
+
+export function printHeader(context?: { provider: string; model: string; cwd?: string }) {
+  const width = getTerminalWidth();
+
+  // Build context string
+  let contextStr = "Sengiku AI CLI";
+  if (context) {
+    contextStr += " · " + context.model;
+    if (context.provider !== "anthropic") {
+      contextStr += ` (${context.provider})`;
+    }
+    if (context.cwd) {
+      contextStr += " · " + truncatePath(context.cwd);
+    }
+  }
+
+  // Adjust context string to fit
+  if (contextStr.length > width - 6) {
+    contextStr = contextStr.substring(0, width - 9) + "…";
+  }
+
+  const padding = Math.max(1, Math.floor((width - contextStr.length - 4) / 2));
+  const leftPad = " ".repeat(padding);
+  const rightPad = " ".repeat(width - contextStr.length - 4 - padding);
+
+  const topBorder = "╭" + "─".repeat(width - 2) + "╮";
+  const contentLine = "│" + leftPad + contextStr + rightPad + "│";
+  const bottomBorder = "╰" + "─".repeat(width - 2) + "╯";
+
+  console.log(colors.dim(topBorder));
+  console.log(colors.dim(contentLine));
+  console.log(colors.dim(bottomBorder));
   console.log();
 }
 
-export function printLabel(role: "Human" | "Assistant") {
+export function printLabel(role: "Human" | "Assistant", badge?: string) {
   const label = role === "Human" ? colors.user("Human") : colors.assistant("Assistant");
-  console.log(label);
+  const badgeStr = badge ? colors.badge(" · " + badge) : "";
+  console.log(label + badgeStr);
 }
 
 export function printToolCall(name: string, input: Record<string, unknown>) {
-  const inputStr = JSON.stringify(input, null, 2).split("\n").slice(0, 5).join("\n");
-  const hasMore = JSON.stringify(input).length > 100;
-  const content = hasMore ? inputStr + pc.dim("...") : inputStr;
-
-  console.log(colors.dim(`╭─ Tool: ${name} ─`));
-  console.log(colors.dim(content));
-  console.log(colors.dim(`╰─ ─`));
+  const inputStr = JSON.stringify(input).replace(/"/g, "'").substring(0, 100);
+  const tooltip = inputStr.length > 100 ? inputStr.substring(0, 97) + "…" : inputStr;
+  console.log(colors.tool("⏺") + " " + colors.tool(name) + pc.dim(`(${tooltip})`));
+  console.log(colors.dim("  └─ Running..."));
 }
 
-export function printToolResult(result: string) {
-  const preview = result.length > 200 ? result.substring(0, 200) + pc.dim("...") : result;
-  console.log(colors.dim(`╭─ Result`));
-  console.log(colors.dim(preview));
-  console.log(colors.dim(`╰─ ─`));
+export function printToolResult(name: string, result: string, timeMs?: number) {
+  const lines = result.split("\n");
+  const maxLines = 8;
+  const displayLines = lines.slice(0, maxLines);
+  const hasMore = lines.length > maxLines;
+
+  const timing = timeMs ? ` ${colors.dim(`(${timeMs}ms)`)}` : "";
+  console.log(colors.success("✓") + " " + colors.success(name) + timing);
+
+  for (const line of displayLines) {
+    console.log(colors.dim("│ ") + line);
+  }
+
+  if (hasMore) {
+    console.log(colors.dim(`│ ... ${lines.length - maxLines} more lines`));
+  }
+
   console.log();
 }
 
 function highlightCode(code: string, lang: string): string {
   try {
-    // Try to highlight with language
     if (lang && lang.trim()) {
       return highlight(code, { language: lang, ignoreIllegals: true });
     }
-    // Try to auto-detect
     return highlight(code, { ignoreIllegals: true });
   } catch {
-    // If highlighting fails, return plain code with indent
-    return code
-      .split("\n")
-      .map((line: string) => `  ${line}`)
-      .join("\n");
+    return code;
   }
 }
 
 function renderCodeBlock(code: string, lang: string): string {
-  const highlighted = highlightCode(code, lang);
-  const border = colors.dim("─".repeat(Math.min(60, code.split("\n")[0]?.length || 20)));
-  const langLabel = lang ? colors.dim(`[${lang}]`) : "";
+  const width = getTerminalWidth();
+  const langLabel = lang ? `${lang}` : "";
+  const borderStart = "╭─ " + langLabel;
+  const borderFill = Math.max(0, width - borderStart.length - 1);
+  const topBorder = borderStart + "─".repeat(borderFill);
+  const bottomBorder = "╰" + "─".repeat(width - 2) + "╯";
 
-  return `\n${border} ${langLabel}\n${highlighted}\n${border}\n`;
+  const highlighted = highlightCode(code.trim(), lang);
+  const codeLines = highlighted.split("\n");
+
+  let result = "\n" + colors.dim(topBorder) + "\n";
+
+  for (const line of codeLines) {
+    result += colors.dim("│ ") + line + "\n";
+  }
+
+  result += colors.dim(bottomBorder) + "\n";
+
+  return result;
 }
 
 export function renderMarkdown(text: string): string {
   let output = "";
+  const lines = text.split("\n");
+  let i = 0;
   let inCodeBlock = false;
   let codeContent = "";
   let codeLang = "";
-
-  // Handle code blocks manually for better control
-  const lines = text.split("\n");
-  let i = 0;
 
   while (i < lines.length) {
     const line = lines[i] || "";

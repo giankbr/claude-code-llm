@@ -1,5 +1,20 @@
 import type { GenericTool } from "./providers/base";
 
+const DANGEROUS_BASH_PATTERNS = [
+  /\brm\s+-rf\s+\//,
+  /\brm\s+-rf\s+\.\b/,
+  /\bmkfs\b/,
+  /\bdd\s+if=.*\sof=\/dev\//,
+  /\bshutdown\b/,
+  /\breboot\b/,
+  /\bpoweroff\b/,
+];
+
+function isDangerousCommand(command: string): boolean {
+  const normalized = command.toLowerCase().trim();
+  return DANGEROUS_BASH_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
 export const TOOLS: GenericTool[] = [
   {
     name: "read_file",
@@ -78,6 +93,14 @@ export async function executeTool(
 
     case "bash": {
       const command = input.command as string;
+      if (!command?.trim()) {
+        return "Error running command: missing `command` argument";
+      }
+
+      if (isDangerousCommand(command)) {
+        return `Blocked potentially destructive command: ${command}`;
+      }
+
       try {
         const proc = Bun.spawnSync(["bash", "-c", command]);
         const stdout = new TextDecoder().decode(proc.stdout);

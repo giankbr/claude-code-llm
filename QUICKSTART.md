@@ -12,12 +12,13 @@ bun run index.ts
 1. Install Ollama: https://ollama.ai
 2. Run a model in another terminal:
    ```bash
-   ollama run llama3.2
+   ollama pull qwen2.5-coder:7b
+   ollama run qwen2.5-coder:7b
    ```
 3. In `.env`, set:
    ```
    PROVIDER=ollama
-   OLLAMA_MODEL=llama3.2
+   OLLAMA_MODEL=qwen2.5-coder:7b
    ```
 4. Run the CLI:
    ```bash

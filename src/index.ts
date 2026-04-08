@@ -36,8 +36,21 @@ function getReadableError(error: unknown): string {
   return `Request gagal: ${message}`;
 }
 
+function getContext() {
+  const provider = process.env.PROVIDER || "anthropic";
+  const model =
+    provider === "ollama"
+      ? process.env.OLLAMA_MODEL || "llama3.2"
+      : provider === "openai-compat"
+        ? process.env.OPENAI_MODEL || "mistral"
+        : process.env.ANTHROPIC_MODEL || "claude-haiku";
+
+  return { provider, model, cwd: process.cwd() };
+}
+
 async function main() {
-  printHeader();
+  const context = getContext();
+  printHeader(context);
   console.log(colors.dim("Type /help for commands, /exit to quit\n"));
 
   // eslint-disable-next-line no-constant-condition
@@ -55,6 +68,8 @@ async function main() {
       continue;
     }
 
+    console.log();
+
     // Check for slash commands
     if (isCommand(input)) {
       const result = handleCommand(input, messages);
@@ -64,6 +79,7 @@ async function main() {
 
       if (result.type === "clear") {
         messages.length = 0;
+        console.log();
         continue;
       }
 
@@ -76,7 +92,7 @@ async function main() {
 
     // Print human label and input
     printLabel("Human");
-    console.log(input);
+    console.log(colors.dim("  " + input));
     console.log();
 
     // Add user message to history
@@ -88,19 +104,22 @@ async function main() {
     // Stream response
     let fullResponse = "";
     let currentToolCall: { name: string; input: Record<string, unknown> } | null = null;
+    const toolStartTime = Date.now();
 
-    spinner.start();
+    spinner.start("Thinking...");
 
     try {
       for await (const token of streamResponse(messages)) {
         // Check for tool call markers
         if (token.startsWith("[TOOL:")) {
+          spinner.stop();
           const match = token.match(/\[TOOL:([^:]+):(.+)\]/);
           if (match && match.length > 2) {
             const name = match[1] || "";
             const inputStr = match[2] || "";
             try {
               currentToolCall = { name, input: JSON.parse(inputStr) };
+              printToolCall(name, currentToolCall.input);
             } catch {
               // Skip if JSON parse fails
             }
@@ -111,8 +130,8 @@ async function main() {
         if (token.startsWith("[RESULT:")) {
           const result = token.substring("[RESULT:".length).replace(/\]$/, "");
           if (currentToolCall) {
-            printToolCall(currentToolCall.name, currentToolCall.input);
-            printToolResult(result);
+            const timeMs = Date.now() - toolStartTime;
+            printToolResult(currentToolCall.name, result, timeMs);
             currentToolCall = null;
           }
           continue;
@@ -125,7 +144,7 @@ async function main() {
       spinner.stop();
 
       // Print rendered markdown response
-      printLabel("Assistant");
+      printLabel("Assistant", context.model);
       console.log(renderMarkdown(fullResponse));
 
       // Add assistant response to messages

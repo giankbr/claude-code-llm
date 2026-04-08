@@ -1,8 +1,32 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat";
-import { Provider, GenericMessage, GenericTool } from "./base";
+import type { Provider, GenericMessage, GenericTool } from "./base";
 import { executeTool } from "../tools";
 import { getSystemPrompt } from "../prompts";
+
+function parseToolArguments(rawArguments: string): Record<string, unknown> {
+  const raw = rawArguments.trim();
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Some local models add trailing text after the JSON body.
+    const firstBrace = raw.indexOf("{");
+    const lastBrace = raw.lastIndexOf("}");
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      const candidate = raw.slice(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
+}
 
 export class OpenAICompatProvider implements Provider {
   private client: OpenAI;
@@ -23,13 +47,14 @@ export class OpenAICompatProvider implements Provider {
       // openai-compat mode
       const baseURL = process.env.OPENAI_BASE_URL;
       const apiKey = process.env.OPENAI_API_KEY;
-      this.model = process.env.OPENAI_MODEL;
+      const model = process.env.OPENAI_MODEL;
 
-      if (!baseURL || !apiKey || !this.model) {
+      if (!baseURL || !apiKey || !model) {
         throw new Error(
           "For openai-compat provider, set OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL"
         );
       }
+      this.model = model;
 
       this.client = new OpenAI({
         apiKey,
@@ -73,17 +98,19 @@ export class OpenAICompatProvider implements Provider {
     let toolCalls: Array<{
       id: string;
       name: string;
+      rawArguments: string;
       input: Record<string, unknown>;
     }> = [];
 
-    const stream = await this.client.chat.completions.create({
+    const stream = (await this.client.chat.completions.create({
       model: this.model,
       messages: openaiMessages,
       stream: true,
       max_tokens: 2048,
       system: getSystemPrompt(),
+      tool_choice: "auto",
       ...(openaiTools.length > 0 && { tools: openaiTools }),
-    } as any);
+    } as any)) as unknown as AsyncIterable<any>;
 
     for await (const chunk of stream) {
       if (!chunk.choices[0]) continue;
@@ -103,6 +130,7 @@ export class OpenAICompatProvider implements Provider {
             toolCallEntry = {
               id: toolCall.id || "",
               name: toolCall.function?.name || "",
+              rawArguments: "",
               input: {},
             };
             toolCalls.push(toolCallEntry);
@@ -113,15 +141,16 @@ export class OpenAICompatProvider implements Provider {
           }
 
           if (toolCall.function?.arguments) {
-            try {
-              const parsed = JSON.parse(toolCall.function.arguments);
-              toolCallEntry.input = { ...toolCallEntry.input, ...parsed };
-            } catch {
-              // Partial JSON, accumulate in input
-            }
+            // Streaming tool arguments often arrive as partial JSON chunks.
+            toolCallEntry.rawArguments += toolCall.function.arguments;
           }
         }
       }
+    }
+
+    // Parse complete tool arguments after stream ends.
+    for (const toolCall of toolCalls) {
+      toolCall.input = parseToolArguments(toolCall.rawArguments);
     }
 
     // Process tool calls if any

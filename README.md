@@ -18,10 +18,11 @@ bun run index.ts
 ### Local Ollama
 ```bash
 # Terminal 1: Run a model
-ollama run llama3.2
+ollama pull qwen2.5-coder:7b
+ollama run qwen2.5-coder:7b
 
 # Terminal 2: Start the CLI
-PROVIDER=ollama OLLAMA_MODEL=llama3.2 bun run index.ts
+PROVIDER=ollama OLLAMA_MODEL=qwen2.5-coder:7b bun run index.ts
 ```
 
 ### LM Studio / vLLM
@@ -94,7 +95,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 
 # Ollama
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=qwen2.5-coder:7b
 OLLAMA_BASE_URL=http://localhost:11434/v1
 
 # OpenAI-compatible
