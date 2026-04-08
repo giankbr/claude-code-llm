@@ -107,6 +107,24 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function shellEscapeSingleQuote(value: string): string {
+  return value.replace(/'/g, "'\\''");
+}
+
+function mapPseudoToolCall(
+  name: string,
+  input: Record<string, unknown>
+): { mappedName: string; mappedInput: Record<string, unknown> } | null {
+  if (name === "mkdir" && typeof input.path === "string" && input.path.trim()) {
+    const escapedPath = shellEscapeSingleQuote(input.path.trim());
+    return {
+      mappedName: "bash",
+      mappedInput: { command: `mkdir -p '${escapedPath}'` },
+    };
+  }
+  return null;
+}
+
 async function runToolWithRetry(
   tool: Tool,
   input: Record<string, unknown>,
@@ -143,11 +161,14 @@ export async function executeTool(
   await initializeTools();
   const startedAt = Date.now();
   const sessionId = ctx.sessionId ?? "default-session";
-  const inputSize = Buffer.from(JSON.stringify(input)).byteLength;
-  const tool = getTool(name);
+  const mappedCall = mapPseudoToolCall(name, input);
+  const effectiveName = mappedCall?.mappedName ?? name;
+  const effectiveInput = mappedCall?.mappedInput ?? input;
+  const inputSize = Buffer.from(JSON.stringify(effectiveInput)).byteLength;
+  const tool = getTool(effectiveName);
   if (!tool) {
     analytics.record({
-      toolName: name,
+      toolName: effectiveName,
       sessionId,
       agentId: ctx.agentId,
       startedAt,
@@ -157,11 +178,11 @@ export async function executeTool(
       inputSize,
       outputSize: 0,
     });
-    return `Unknown tool: ${name}`;
+    return `Unknown tool: ${effectiveName}`;
   }
 
   try {
-    const toolPermission = await tool.checkPermissions(input, ctx);
+    const toolPermission = await tool.checkPermissions(effectiveInput, ctx);
     if (!toolPermission.allowed) {
       throw new ToolPermissionError(toolPermission.reason || "unknown reason");
     }
@@ -171,26 +192,29 @@ export async function executeTool(
         toolName: name,
         isReadOnly: tool.isReadOnly(),
         isDestructive: tool.isDestructive(),
-        command: typeof input.command === "string" ? input.command : undefined,
+        command:
+          typeof effectiveInput.command === "string"
+            ? effectiveInput.command
+            : undefined,
       },
       ctx.permissionMode
     );
     if (!modePermission) {
-      throw new ToolPermissionError("Tool execution cancelled by user");
+      throw new ToolPermissionError("Blocked by permission policy");
     }
 
     if (tool.onBeforeExecute) {
       await tool.onBeforeExecute(input, ctx);
     }
 
-    const result = await runToolWithRetry(tool, input, ctx, DEFAULT_RETRY_CONFIG);
+    const result = await runToolWithRetry(tool, effectiveInput, ctx, DEFAULT_RETRY_CONFIG);
 
     if (tool.onAfterExecute) {
       await tool.onAfterExecute(result, ctx);
     }
 
     analytics.record({
-      toolName: name,
+      toolName: effectiveName,
       sessionId,
       agentId: ctx.agentId,
       startedAt,
@@ -219,7 +243,7 @@ export async function executeTool(
       }
     }
 
-    const fallbackName = FALLBACK_MAP[name];
+    const fallbackName = FALLBACK_MAP[effectiveName];
     if (fallbackName) {
       const fallbackTool = getTool(fallbackName);
       if (fallbackTool) {
@@ -235,7 +259,7 @@ export async function executeTool(
           );
           const output = clampResult(fallbackTool, fallbackResult).output;
           analytics.record({
-            toolName: `${name}->${fallbackName}`,
+            toolName: `${effectiveName}->${fallbackName}`,
             sessionId,
             agentId: ctx.agentId,
             startedAt,
@@ -250,9 +274,9 @@ export async function executeTool(
         }
       }
     }
-    const message = `Tool ${name} failed: ${error instanceof Error ? error.message : String(error)}`;
+    const message = `Tool ${effectiveName} failed: ${error instanceof Error ? error.message : String(error)}`;
     analytics.record({
-      toolName: name,
+      toolName: effectiveName,
       sessionId,
       agentId: ctx.agentId,
       startedAt,

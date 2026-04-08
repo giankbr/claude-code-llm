@@ -1,9 +1,17 @@
 {
-  "role": "editor",
+  "role": "admin",
   "toolOverrides": [
     {
       "toolName": "bash",
       "mode": "plan"
+    },
+    {
+      "toolName": "write_file",
+      "mode": "auto"
+    },
+    {
+      "toolName": "edit_file",
+      "mode": "auto"
     },
     {
       "toolName": "read_file",

@@ -1,5 +1,7 @@
 import { analytics } from "./analytics";
 
+const EXCLUDED_SUGGESTION_TOOLS = new Set(["echo_tool"]);
+
 const KEYWORD_TOOL_MAP: Array<{ regex: RegExp; tools: string[] }> = [
   { regex: /\b(read|show|lihat|baca)\b.*\b(file|berkas)\b/i, tools: ["read_file"] },
   { regex: /\b(write|buat|create|tulis)\b.*\b(file|berkas)\b/i, tools: ["write_file"] },
@@ -15,7 +17,9 @@ export function autoSuggest(input: string): string[] {
   for (const rule of KEYWORD_TOOL_MAP) {
     if (rule.regex.test(input)) {
       for (const tool of rule.tools) {
-        suggested.add(tool);
+        if (!EXCLUDED_SUGGESTION_TOOLS.has(tool)) {
+          suggested.add(tool);
+        }
       }
     }
   }
@@ -27,7 +31,9 @@ export function autoSuggest(input: string): string[] {
     .map(([toolName]) => toolName);
 
   for (const toolName of frequent) {
-    suggested.add(toolName);
+    if (!EXCLUDED_SUGGESTION_TOOLS.has(toolName)) {
+      suggested.add(toolName);
+    }
   }
 
   return Array.from(suggested).slice(0, 3);

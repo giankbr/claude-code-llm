@@ -17,6 +17,7 @@ import { isCommand, handleCommand } from "./commands/registry";
 import { executeTool } from "./tools/registry";
 import { autoSuggest } from "./suggestions";
 import { analytics } from "./analytics";
+import type { PermissionMode } from "./tools/base";
 
 const messages: GenericMessage[] = [];
 const SENGIKU_DIR = path.join(process.cwd(), ".sengiku");
@@ -33,8 +34,43 @@ type LearningMemory = {
   preferredWorkflow: string;
 };
 
+type SessionPermissionPreset = "manual" | "auto-edit" | "full-auto";
+
 function getSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function configureSessionPermissions(): Promise<PermissionMode> {
+  const { preset } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "preset",
+      message: "Session permission mode:",
+      choices: [
+        { name: "Manual (ask destructive tools)", value: "manual" },
+        { name: "Auto accept edit (write/edit auto, bash still asks)", value: "auto-edit" },
+        { name: "Full auto (smart auto for all tools)", value: "full-auto" },
+      ],
+      default: "manual",
+    },
+  ]);
+
+  const selected = preset as SessionPermissionPreset;
+  if (selected === "auto-edit") {
+    const existing = (process.env.ALWAYS_ALLOW || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const merged = Array.from(new Set([...existing, "write_file", "edit_file"]));
+    process.env.ALWAYS_ALLOW = merged.join(",");
+    return "default";
+  }
+
+  if (selected === "full-auto") {
+    return "auto";
+  }
+
+  return "default";
 }
 
 function updateMemoryFromAnalytics(): void {
@@ -107,6 +143,11 @@ function collectObjectLikeSnippets(text: string): string[] {
     }
   }
 
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    snippets.add(trimmed);
+  }
+
   return Array.from(snippets);
 }
 
@@ -132,6 +173,13 @@ function extractTextToolCalls(text: string): TextToolCall[] {
   }
 
   return calls;
+}
+
+function isNoOpTextToolCall(call: TextToolCall): boolean {
+  if (call.name === "echo_tool") {
+    return true;
+  }
+  return false;
 }
 
 function ensureLearningFiles(): void {
@@ -279,6 +327,7 @@ function getContext() {
 async function main() {
   ensureLearningFiles();
   const sessionId = getSessionId();
+  const sessionPermissionMode = await configureSessionPermissions();
   const context = getContext();
   printHeader(context);
 
@@ -345,7 +394,7 @@ async function main() {
       for await (const token of streamResponse(messages, undefined, {
         signal: controller.signal,
         sessionId,
-        permissionMode: "default",
+        permissionMode: sessionPermissionMode,
       })) {
 
         if (token.startsWith("[TOOL:")) {
@@ -389,7 +438,9 @@ async function main() {
       const maxFallbackRounds = 5;
 
       while (true) {
-        const textToolCalls = extractTextToolCalls(assistantText);
+        const textToolCalls = extractTextToolCalls(assistantText).filter(
+          (call) => !isNoOpTextToolCall(call)
+        );
         messages.push({
           role: "assistant",
           content: assistantText,
@@ -424,7 +475,7 @@ async function main() {
           printToolCall(call.name, call.arguments);
           const result = await executeTool(call.name, call.arguments, {
             workspaceRoot: process.cwd(),
-            permissionMode: "default",
+            permissionMode: sessionPermissionMode,
             sessionId,
             signal: controller.signal,
           });
@@ -449,7 +500,7 @@ async function main() {
         for await (const token of streamResponse(messages, undefined, {
           signal: controller.signal,
           sessionId,
-          permissionMode: "default",
+          permissionMode: sessionPermissionMode,
         })) {
           followUp += token;
         }
@@ -474,7 +525,7 @@ async function main() {
         for await (const token of streamResponse(messages, undefined, {
           signal: controller.signal,
           sessionId,
-          permissionMode: "default",
+          permissionMode: sessionPermissionMode,
         })) {
           retryResponse += token;
         }
@@ -495,7 +546,7 @@ async function main() {
             printToolCall(call.name, call.arguments);
             const result = await executeTool(call.name, call.arguments, {
               workspaceRoot: process.cwd(),
-              permissionMode: "default",
+              permissionMode: sessionPermissionMode,
               sessionId,
               signal: controller.signal,
             });
