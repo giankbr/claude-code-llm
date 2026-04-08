@@ -7,6 +7,7 @@ import {
   colors,
   spinner,
   printHeader,
+  printChatDivider,
   printToolSectionHeader,
   printToolCall,
   printToolResult,
@@ -18,6 +19,7 @@ import { executeTool } from "./tools/registry";
 import { autoSuggest } from "./suggestions";
 import { analytics } from "./analytics";
 import type { PermissionMode } from "./tools/base";
+import { evaluateToolExecution, type ExecutedToolEvent } from "./quality-gate";
 
 const messages: GenericMessage[] = [];
 const SENGIKU_DIR = path.join(process.cwd(), ".sengiku");
@@ -34,43 +36,8 @@ type LearningMemory = {
   preferredWorkflow: string;
 };
 
-type SessionPermissionPreset = "manual" | "auto-edit" | "full-auto";
-
 function getSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-async function configureSessionPermissions(): Promise<PermissionMode> {
-  const { preset } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "preset",
-      message: "Session permission mode:",
-      choices: [
-        { name: "Manual (ask destructive tools)", value: "manual" },
-        { name: "Auto accept edit (write/edit auto, bash still asks)", value: "auto-edit" },
-        { name: "Full auto (smart auto for all tools)", value: "full-auto" },
-      ],
-      default: "manual",
-    },
-  ]);
-
-  const selected = preset as SessionPermissionPreset;
-  if (selected === "auto-edit") {
-    const existing = (process.env.ALWAYS_ALLOW || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const merged = Array.from(new Set([...existing, "write_file", "edit_file"]));
-    process.env.ALWAYS_ALLOW = merged.join(",");
-    return "default";
-  }
-
-  if (selected === "full-auto") {
-    return "auto";
-  }
-
-  return "default";
 }
 
 function updateMemoryFromAnalytics(): void {
@@ -327,12 +294,13 @@ function getContext() {
 async function main() {
   ensureLearningFiles();
   const sessionId = getSessionId();
-  const sessionPermissionMode = await configureSessionPermissions();
+  const sessionPermissionMode: PermissionMode = "default";
   const context = getContext();
   printHeader(context);
 
 
   while (true) {
+    printChatDivider();
     const { input } = await inquirer.prompt([
       {
         type: "input",
@@ -387,6 +355,7 @@ async function main() {
     const toolStartTime = Date.now();
     let hasPrintedToolSection = false;
     let executedAnyTool = false;
+    const executedToolEvents: ExecutedToolEvent[] = [];
 
     spinner.start("Thinking...");
 
@@ -423,6 +392,11 @@ async function main() {
             const timeMs = Date.now() - toolStartTime;
             printToolResult(currentToolCall.name, result, timeMs);
             executedAnyTool = true;
+            executedToolEvents.push({
+              toolName: currentToolCall.name,
+              input: currentToolCall.input,
+              result,
+            });
             currentToolCall = null;
           }
           continue;
@@ -448,12 +422,14 @@ async function main() {
 
         if (textToolCalls.length === 0) {
           console.log(renderMarkdown(assistantText));
+          printChatDivider();
           console.log();
           break;
         }
 
         if (!isLikelyActionRequest(input)) {
           console.log(renderMarkdown(assistantText));
+          printChatDivider();
           console.log();
           break;
         }
@@ -482,6 +458,11 @@ async function main() {
           printToolResult(call.name, result, Date.now() - startedAt);
           executedAnyTool = true;
           updateMemoryFromAnalytics();
+          executedToolEvents.push({
+            toolName: call.name,
+            input: call.arguments,
+            result,
+          });
 
           messages.push({
             role: "user",
@@ -552,6 +533,11 @@ async function main() {
             });
             printToolResult(call.name, result, Date.now() - startedAt);
             updateMemoryFromAnalytics();
+            executedToolEvents.push({
+              toolName: call.name,
+              input: call.arguments,
+              result,
+            });
             messages.push({
               role: "user",
               content: `Tool ${call.name} returned: ${result}`,
@@ -559,7 +545,39 @@ async function main() {
           }
         } else {
           console.log(renderMarkdown(retryResponse));
+          printChatDivider();
           console.log();
+        }
+      }
+
+      if (isLikelyActionRequest(input) && executedToolEvents.length > 0) {
+        const gateFeedback = evaluateToolExecution(input, executedToolEvents);
+        if (gateFeedback) {
+          messages.push({
+            role: "user",
+            content: `System quality gate: ${gateFeedback}`,
+          });
+
+          spinner.start("Applying quality gate feedback...");
+          let gatedResponse = "";
+          for await (const token of streamResponse(messages, undefined, {
+            signal: controller.signal,
+            sessionId,
+            permissionMode: sessionPermissionMode,
+          })) {
+            gatedResponse += token;
+          }
+          spinner.stop();
+
+          if (gatedResponse.trim()) {
+            messages.push({
+              role: "assistant",
+              content: gatedResponse,
+            });
+            console.log(renderMarkdown(gatedResponse));
+            printChatDivider();
+            console.log();
+          }
         }
       }
     } catch (error) {

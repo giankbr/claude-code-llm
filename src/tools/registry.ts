@@ -196,6 +196,7 @@ export async function executeTool(
           typeof effectiveInput.command === "string"
             ? effectiveInput.command
             : undefined,
+        sessionId,
       },
       ctx.permissionMode
     );

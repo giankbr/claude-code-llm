@@ -3,6 +3,8 @@ import ora from "ora";
 import highlight from "cli-highlight";
 import os from "os";
 import inquirer from "inquirer";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 export { pc };
 
@@ -19,9 +21,36 @@ export const colors = {
 };
 
 export const spinner = ora();
+let cachedVersion: string | null = null;
 
 function getTerminalWidth(): number {
   return Math.max(process.stdout.columns || 80, 60);
+}
+
+function padRight(text: string, width: number): string {
+  if (text.length >= width) return text.slice(0, width);
+  return text + " ".repeat(width - text.length);
+}
+
+function truncateText(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, Math.max(0, maxLen - 1)) + "…";
+}
+
+function drawPanel(lines: string[], width: number): string[] {
+  const innerWidth = Math.max(20, width - 2);
+  const top = "╭" + "─".repeat(innerWidth) + "╮";
+  const bottom = "╰" + "─".repeat(innerWidth) + "╯";
+  const body = lines.map((line) => "│" + padRight(truncateText(line, innerWidth), innerWidth) + "│");
+  return [top, ...body, bottom];
+}
+
+function padPanelLines(lines: string[], targetLength: number): string[] {
+  const padded = [...lines];
+  while (padded.length < targetLength) {
+    padded.push("");
+  }
+  return padded;
 }
 
 function truncatePath(filePath: string, maxLen: number = 30): string {
@@ -33,27 +62,84 @@ function truncatePath(filePath: string, maxLen: number = 30): string {
   return displayPath;
 }
 
+function getAppVersion(): string {
+  if (cachedVersion) {
+    return cachedVersion;
+  }
+
+  try {
+    const pkgPath = path.join(process.cwd(), "package.json");
+    if (!existsSync(pkgPath)) {
+      cachedVersion = "dev";
+      return cachedVersion;
+    }
+
+    const raw = readFileSync(pkgPath, "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    if (typeof parsed.version === "string" && parsed.version.trim()) {
+      cachedVersion = parsed.version.trim();
+      return cachedVersion;
+    }
+  } catch {
+    // ignore parse/read errors and use fallback
+  }
+
+  cachedVersion = "dev";
+  return cachedVersion;
+}
+
 export function printHeader(context?: { provider: string; model: string; cwd?: string }) {
   const width = getTerminalWidth();
-  let contextStr = "Sengiku Code";
+  const contextStr = `Sengiku Code v${getAppVersion()}`;
+
+  let providerInfo = "Anthropic";
+  let modelInfo = "Claude";
   if (context) {
-    contextStr += " · " + context.model;
+    modelInfo = context.model;
     if (context.provider !== "anthropic") {
-      contextStr += ` (${context.provider})`;
-    }
-    if (context.cwd) {
-      contextStr += " · " + truncatePath(context.cwd);
+      providerInfo = context.provider;
     }
   }
 
-  if (contextStr.length > width - 2) {
-    contextStr = contextStr.substring(0, width - 5) + "…";
+  const cwdPath = context?.cwd ? truncatePath(context.cwd, 44) : "~";
+  const usableWidth = Math.min(width, 120);
+  const panelWidth = Math.max(34, Math.floor((usableWidth - 3) / 2));
+  const leftWidth = panelWidth;
+  const rightWidth = panelWidth;
+  const panelContentWidth = leftWidth + rightWidth + 3;
+
+  const leftLines = [
+    " Welcome back!",
+    "",
+    ` ${providerInfo} · ${modelInfo}`,
+    ` ${cwdPath}`,
+  ];
+
+  const rightLines = [
+    " Tips for getting started",
+    " Run /init to create CLAUDE.md file with instructions.",
+    "",
+    " Recent activity",
+    " No recent activity",
+    "",
+    " Commands: /help  /tools  /memory  /exit",
+  ];
+
+  const bodyRows = Math.max(leftLines.length, rightLines.length);
+  const leftPanel = drawPanel(padPanelLines(leftLines, bodyRows), leftWidth);
+  const rightPanel = drawPanel(padPanelLines(rightLines, bodyRows), rightWidth);
+  const totalRows = leftPanel.length;
+
+  for (let i = 0; i < totalRows; i++) {
+    const left = leftPanel[i] || "";
+    const right = rightPanel[i] || "";
+    console.log(colors.dim(`${left}   ${right}`));
   }
 
-  const hint = "Type /help for commands, /exit to quit";
-  const divider = "─".repeat(Math.max(30, Math.min(width, 80)));
-  console.log(colors.dim(contextStr));
-  console.log(colors.dim(hint));
+  const divider = "─".repeat(Math.max(30, Math.min(width, panelContentWidth)));
+  const contextLine = truncateText(contextStr, Math.max(20, width - 2));
+  console.log(colors.dim(contextLine));
+
   console.log(colors.dim(divider));
   console.log();
 }
@@ -70,6 +156,12 @@ export function promptSymbol(): string {
 
 export function printToolSectionHeader(): void {
   console.log(colors.dim("Tool Calls"));
+}
+
+export function printChatDivider(): void {
+  const width = getTerminalWidth();
+  const divider = "─".repeat(Math.max(30, width - 2));
+  console.log(colors.dim(divider));
 }
 
 export function printToolCall(name: string, input: Record<string, unknown>) {

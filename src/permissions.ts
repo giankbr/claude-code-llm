@@ -9,6 +9,7 @@ export interface PermissionRequest {
   isDestructive: boolean;
   reason?: string;
   command?: string;
+  sessionId?: string;
 }
 
 export interface ToolPermissionOverride {
@@ -23,6 +24,11 @@ interface PermissionsConfig {
 }
 
 const PERMISSIONS_FILE = path.join(process.cwd(), ".sengiku", "permissions.json");
+const sessionApprovalCache = new Set<string>();
+
+function getSessionApprovalKey(sessionId: string, toolName: string): string {
+  return `${sessionId}::${toolName}`;
+}
 
 function loadPermissionsConfig(): PermissionsConfig {
   if (!existsSync(PERMISSIONS_FILE)) {
@@ -105,6 +111,13 @@ export async function resolvePermission(
 
   // 3) Plan mode asks always
   if (effectiveMode === "plan") {
+    if (request.sessionId) {
+      const key = getSessionApprovalKey(request.sessionId, request.toolName);
+      if (sessionApprovalCache.has(key)) {
+        return true;
+      }
+    }
+
     const { confirmed } = await inquirer.prompt([
       {
         type: "confirm",
@@ -113,6 +126,11 @@ export async function resolvePermission(
         default: false,
       },
     ]);
+    if (confirmed && request.sessionId) {
+      sessionApprovalCache.add(
+        getSessionApprovalKey(request.sessionId, request.toolName)
+      );
+    }
     return confirmed;
   }
 
