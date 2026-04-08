@@ -149,6 +149,39 @@ function isNoOpTextToolCall(call: TextToolCall): boolean {
   return false;
 }
 
+function normalizeTextToolCall(call: TextToolCall): TextToolCall {
+  const name = call.name.trim().toLowerCase();
+  if (name === "git_log") {
+    return {
+      name: "git_tool",
+      arguments: { ...call.arguments, action: "log" },
+    };
+  }
+  if (name === "git_status") {
+    return {
+      name: "git_tool",
+      arguments: { ...call.arguments, action: "status" },
+    };
+  }
+  if (name === "git_diff") {
+    return {
+      name: "git_tool",
+      arguments: { ...call.arguments, action: "diff" },
+    };
+  }
+  if (name === "git_branch") {
+    return {
+      name: "git_tool",
+      arguments: { ...call.arguments, action: "branch" },
+    };
+  }
+  return call;
+}
+
+function isUnknownToolResult(result: string): boolean {
+  return /^Unknown tool:/i.test(result.trim());
+}
+
 function ensureLearningFiles(): void {
   if (!existsSync(SENGIKU_DIR)) {
     mkdirSync(SENGIKU_DIR, { recursive: true });
@@ -238,7 +271,7 @@ function buildModelInput(userInput: string): string {
 }
 
 function isLikelyActionRequest(input: string): boolean {
-  return /buat|create|edit|ubah|write|run|jalankan|install|folder|file|command|bash|commit|push/i.test(
+  return /buat|create|edit|ubah|write|run|jalankan|install|folder|file|command|bash|commit|push|pakai|use|tool|status|diff|log|branch/i.test(
     input
   );
 }
@@ -477,7 +510,9 @@ async function main() {
           console.log(colors.dim("Detected textual tool calls, running fallback."));
         }
 
-        for (const call of textToolCalls) {
+        let unknownToolDetected = false;
+        for (const rawCall of textToolCalls) {
+          const call = normalizeTextToolCall(rawCall);
           if (isWriteOutsideRequestedTarget(call, requestedTargetDir)) {
             const target = requestedTargetDir || "(unknown)";
             const blockedPath =
@@ -514,6 +549,17 @@ async function main() {
           messages.push({
             role: "user",
             content: `Tool ${call.name} returned: ${result}`,
+          });
+          if (isUnknownToolResult(result)) {
+            unknownToolDetected = true;
+          }
+        }
+
+        if (unknownToolDetected) {
+          messages.push({
+            role: "user",
+            content:
+              "System feedback: Unknown tool detected. Retry immediately using only registered tools. For git operations, use git_tool with actions status|diff|log|branch|add|commit|push.",
           });
         }
 
@@ -569,7 +615,8 @@ async function main() {
             printToolSectionHeader();
             hasPrintedToolSection = true;
           }
-          for (const call of retryToolCalls) {
+          for (const rawCall of retryToolCalls) {
+            const call = normalizeTextToolCall(rawCall);
             const startedAt = Date.now();
             printToolCall(call.name, call.arguments);
             const result = await executeTool(call.name, call.arguments, {
