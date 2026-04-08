@@ -37,6 +37,30 @@ function isValidToolName(name: string): boolean {
   return /^[a-zA-Z0-9_]+$/.test(name.trim());
 }
 
+/**
+ * Normalise a file path coming from the model:
+ *  - "Users/foo/bar/index.html"  →  absolute path missing leading "/"  →  prepend it
+ *  - "/Users/.../workspace/index.html"  →  absolute inside workspace  →  strip prefix → "index.html"
+ */
+function normalizeFilePath(inputPath: string): string {
+  const cwd = process.cwd();
+  let p = inputPath.trim();
+
+  // Add missing leading "/" for OS-root-looking relative paths
+  if (!p.startsWith("/") && /^(Users|home|var|opt|tmp|root)\//.test(p)) {
+    p = `/${p}`;
+  }
+
+  // Strip workspace root prefix → keep it relative
+  if (p.startsWith(`${cwd}/`)) {
+    p = p.slice(cwd.length + 1);
+  } else if (p === cwd) {
+    p = ".";
+  }
+
+  return p;
+}
+
 function getUserOnlyText(prompt: string): string {
   const requestMatch = prompt.match(/User request:\s*([\s\S]*)$/i);
   if (requestMatch && requestMatch[1]) {
@@ -239,12 +263,17 @@ async function repairArgsWithModelCall(
     }
   }
 
-  // read_file: almost always reading the last file that was written
   if (toolName === "read_file" || toolName === "list_dir") {
     if (lastWrittenPath) {
       return { repaired: { ...args, path: lastWrittenPath }, wasRepaired: true };
     }
-    // Ask model which file to read
+    // Scan userRequest for a filename before spending an API call
+    const fileHint = userRequest.match(
+      /\b([A-Za-z0-9._/-]+\.(?:html|css|js|ts|json|md|txt|jsx|tsx|py|sh|yaml|yml|env))\b/i
+    );
+    if (fileHint?.[1]) {
+      return { repaired: { ...args, path: fileHint[1] }, wasRepaired: true };
+    }
     repairPrompt =
       `The user requested: "${userRequest}"\n\n` +
       `Which file path should be read? Reply with ONLY the file path (e.g. index.html or src/app.ts):`;
@@ -561,6 +590,13 @@ export class OpenAICompatProvider implements Provider {
           if (modelRepair.wasRepaired) {
             finalArgs = modelRepair.repaired;
           }
+        }
+        // Normalise path arg for any file tool to prevent doubled-root paths
+        if (
+          typeof finalArgs.path === "string" &&
+          ["read_file", "write_file", "edit_file", "list_dir"].includes(normalized.name)
+        ) {
+          finalArgs = { ...finalArgs, path: normalizeFilePath(finalArgs.path as string) };
         }
         normalized.arguments = finalArgs;
 
