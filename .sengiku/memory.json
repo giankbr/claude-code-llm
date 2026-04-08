@@ -1,0 +1,12 @@
+{
+  "projectGoal": "Build a reliable local coding CLI agent.",
+  "codingStyle": [
+    "TypeScript strict",
+    "small functions",
+    "clear error messages"
+  ],
+  "preferredCommands": [
+    "bun run typecheck",
+    "bun run index.ts"
+  ]
+}
