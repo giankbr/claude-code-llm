@@ -1,6 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import type { Tool, ToolContext, PermissionDecision } from "./base";
+import type { Tool, PermissionDecision, ToolResult } from "./base";
 
 const WORKSPACE_ROOT = process.cwd();
 
@@ -72,6 +72,11 @@ export const searchFilesTool: Tool = {
   isDestructive(): boolean {
     return false;
   },
+  isConcurrencySafe(): boolean {
+    return true;
+  },
+  maxResultSizeChars: 30_000,
+  tags: ["file", "search", "read-only"],
   async checkPermissions(
     input: Record<string, unknown>
   ): Promise<PermissionDecision> {
@@ -81,13 +86,13 @@ export const searchFilesTool: Tool = {
     }
     return { allowed: true };
   },
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const pattern = input.pattern as string;
     const startPath = (input.start_path as string) || ".";
 
     const safePath = resolveInWorkspace(startPath);
     if (!safePath) {
-      return "Error: start_path outside workspace";
+      return { output: "Error: start_path outside workspace" };
     }
 
     try {
@@ -95,12 +100,16 @@ export const searchFilesTool: Tool = {
       const results = await findFilesRecursive(safePath, regex);
 
       if (results.length === 0) {
-        return `No files matching pattern: ${pattern}`;
+        return { output: `No files matching pattern: ${pattern}` };
       }
 
-      return results.join("\n");
+      return {
+        output: results.join("\n"),
+        format: "json",
+        structuredData: { matches: results, pattern },
+      };
     } catch (e) {
-      return `Error searching files: ${e instanceof Error ? e.message : String(e)}`;
+      return { output: `Error searching files: ${e instanceof Error ? e.message : String(e)}` };
     }
   },
 };

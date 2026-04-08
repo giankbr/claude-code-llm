@@ -8,5 +8,11 @@
   "preferredCommands": [
     "bun run typecheck",
     "bun run index.ts"
-  ]
+  ],
+  "frequentTools": [
+    "echo_tool",
+    "read_file"
+  ],
+  "lastActive": "2026-04-08T11:17:36.153Z",
+  "preferredWorkflow": "tool-first execution with iterative follow-up"
 }

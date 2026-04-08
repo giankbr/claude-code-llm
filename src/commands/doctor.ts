@@ -1,6 +1,7 @@
 import type { Command } from "./base";
 import type { GenericMessage } from "../providers/base";
 import { colors } from "../ui";
+import { analytics } from "../analytics";
 
 async function checkUrl(baseUrl: string): Promise<string> {
   const controller = new AbortController();
@@ -31,6 +32,12 @@ async function buildDoctorReport(messages: GenericMessage[]): Promise<string> {
   const openaiModel = process.env.OPENAI_MODEL || "(not set)";
   const promptType = process.env.SYSTEM_PROMPT_TYPE || "code";
   const cwd = process.cwd();
+  const summary = analytics.getSummary();
+  const topTools = Object.entries(summary.byTool)
+    .sort((a, b) => b[1].calls - a[1].calls)
+    .slice(0, 3)
+    .map(([name, value]) => `${name}(${value.calls}x/${value.avgMs}ms/${Math.round(value.errorRate * 100)}%err)`)
+    .join(", ");
 
   let connectivityLine = "n/a";
   if (provider === "ollama") {
@@ -66,6 +73,10 @@ ${colors.dim("Connectivity")}
 ${colors.dim("Tool sandbox")}
   read_file/write_file: workspace-only
   bash               : workspace cwd + dangerous commands blocked
+
+${colors.dim("Tool analytics")}
+  Total calls        : ${summary.totalCalls}
+  Top tools          : ${topTools || "n/a"}
   `.trim();
 }
 

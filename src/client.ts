@@ -1,7 +1,7 @@
 import type { GenericMessage, GenericTool, Provider } from "./providers/base";
 import { AnthropicProvider } from "./providers/anthropic";
 import { OpenAICompatProvider } from "./providers/openai-compat";
-import { TOOLS } from "./tools/registry";
+import { getGenericTools, initializeTools } from "./tools/registry";
 
 let provider: Provider;
 
@@ -21,8 +21,15 @@ function getProvider(): Provider {
 
 export async function* streamResponse(
   messages: GenericMessage[],
-  tools: GenericTool[] = TOOLS
+  tools?: GenericTool[],
+  options?: {
+    signal?: AbortSignal;
+    sessionId?: string;
+    permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
+  }
 ): AsyncGenerator<string> {
+  await initializeTools();
+  const resolvedTools = tools ?? getGenericTools();
   const selectedProvider = getProvider();
-  yield* selectedProvider.streamResponse(messages, tools);
+  yield* selectedProvider.streamResponse(messages, resolvedTools, options);
 }

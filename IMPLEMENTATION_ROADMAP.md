@@ -9,16 +9,16 @@ Implementasi 10 fitur ke Sengiku Code untuk evolve dari basic CLI agent menjadi 
 
 | # | Feature | Priority | Batch | Status |
 |---|---------|----------|-------|--------|
-| 1 | Tool Lifecycle Hooks | High | 1 | TODO |
-| 2 | Advanced Permission Modes | High | 2 | TODO |
-| 3 | Tool Metadata & Composition | High | 1 | TODO |
-| 4 | Better Error Handling | High | 2 | TODO |
-| 5 | Learning Integration | Medium | 3 | TODO |
-| 6 | Agent Context Propagation | High | 1 | TODO |
-| 7 | Dynamic Tool Loading | Medium | 4 | TODO |
-| 8 | Tool Result Formatting | High | 1 | TODO |
-| 9 | Tool Analytics | Lower | 3 | TODO |
-| 10 | Streaming Improvements | Lower | 4 | TODO |
+| 1 | Tool Lifecycle Hooks | High | 1 | DONE (core hooks wired) |
+| 2 | Advanced Permission Modes | High | 2 | DONE (plan/role/overrides) |
+| 3 | Tool Metadata & Composition | High | 1 | DONE (metadata + registry class) |
+| 4 | Better Error Handling | High | 2 | DONE (retry/fallback/error types) |
+| 5 | Learning Integration | Medium | 3 | DONE (memory + suggestions) |
+| 6 | Agent Context Propagation | High | 1 | DONE (agent breadcrumb propagation) |
+| 7 | Dynamic Tool Loading | Medium | 4 | DONE (plugin loader + registry init) |
+| 8 | Tool Result Formatting | High | 1 | DONE (ToolResult + truncation) |
+| 9 | Tool Analytics | Lower | 3 | DONE (jsonl tracking + /doctor summary) |
+| 10 | Streaming Improvements | Lower | 4 | DONE (signal propagation + depth guard) |
 
 ---
 

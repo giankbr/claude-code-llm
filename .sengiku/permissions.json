@@ -1,0 +1,13 @@
+{
+  "role": "editor",
+  "toolOverrides": [
+    {
+      "toolName": "bash",
+      "mode": "plan"
+    },
+    {
+      "toolName": "read_file",
+      "mode": "bypassPermissions"
+    }
+  ]
+}

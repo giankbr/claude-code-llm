@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { Tool, ToolContext, PermissionDecision } from "./base";
+import type { Tool, PermissionDecision, ToolResult } from "./base";
 
 const WORKSPACE_ROOT = process.cwd();
 
@@ -35,6 +35,10 @@ export const writeFileTool: Tool = {
   isDestructive(): boolean {
     return true;
   },
+  isConcurrencySafe(): boolean {
+    return false;
+  },
+  tags: ["file", "write", "destructive"],
   async checkPermissions(
     input: Record<string, unknown>
   ): Promise<PermissionDecision> {
@@ -48,18 +52,18 @@ export const writeFileTool: Tool = {
     }
     return { allowed: true };
   },
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const inputPath = input.path as string;
     const content = input.content as string;
     const safePath = resolveInWorkspace(inputPath);
     if (!safePath) {
-      return `Error writing file: path outside workspace`;
+      return { output: "Error writing file: path outside workspace" };
     }
     try {
       await Bun.write(safePath, content);
-      return `Successfully wrote to ${safePath}`;
+      return { output: `Successfully wrote to ${safePath}` };
     } catch (e) {
-      return `Error writing file: ${e instanceof Error ? e.message : String(e)}`;
+      return { output: `Error writing file: ${e instanceof Error ? e.message : String(e)}` };
     }
   },
 };

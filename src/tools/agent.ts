@@ -1,4 +1,4 @@
-import type { Tool, ToolContext, PermissionDecision } from "./base";
+import type { Tool, ToolContext, PermissionDecision, ToolResult } from "./base";
 import type { GenericMessage } from "../providers/base";
 import { streamResponse } from "../client";
 
@@ -26,6 +26,10 @@ export const agentTool: Tool = {
   isDestructive(): boolean {
     return false;
   },
+  isConcurrencySafe(): boolean {
+    return false;
+  },
+  tags: ["agent", "orchestration"],
   async checkPermissions(
     input: Record<string, unknown>
   ): Promise<PermissionDecision> {
@@ -35,9 +39,14 @@ export const agentTool: Tool = {
     }
     return { allowed: true };
   },
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const task = input.task as string;
     const context = (input.context as string) || "";
+    const agentId = `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const breadcrumbs = [
+      ...(ctx.breadcrumbs ?? []),
+      { agentId, task, timestamp: Date.now() },
+    ];
 
     // Build initial message for sub-agent
     let userMessage = task;
@@ -46,7 +55,18 @@ export const agentTool: Tool = {
     }
 
     const subMessages: GenericMessage[] = [
-      { role: "user", content: userMessage },
+      {
+        role: "user",
+        content: [
+          userMessage,
+          "",
+          `Agent context: ${JSON.stringify({
+            agentId,
+            parentAgentId: ctx.agentId,
+            breadcrumbs,
+          })}`,
+        ].join("\n"),
+      },
     ];
 
     // Stream response from sub-agent
@@ -95,9 +115,12 @@ export const agentTool: Tool = {
         });
       }
 
-      return fullResponse.trim() || "(no output)";
+      return {
+        output: fullResponse.trim() || "(no output)",
+        structuredData: { agentId, parentAgentId: ctx.agentId, breadcrumbs },
+      };
     } catch (e) {
-      return `Error running sub-agent: ${e instanceof Error ? e.message : String(e)}`;
+      return { output: `Error running sub-agent: ${e instanceof Error ? e.message : String(e)}` };
     }
   },
 };

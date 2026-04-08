@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { Tool, ToolContext, PermissionDecision } from "./base";
+import type { Tool, PermissionDecision, ToolResult } from "./base";
 
 const WORKSPACE_ROOT = process.cwd();
 
@@ -31,6 +31,11 @@ export const readFileTool: Tool = {
   isDestructive(): boolean {
     return false;
   },
+  isConcurrencySafe(): boolean {
+    return true;
+  },
+  maxResultSizeChars: 60_000,
+  tags: ["file", "read-only"],
   async checkPermissions(
     input: Record<string, unknown>
   ): Promise<PermissionDecision> {
@@ -44,18 +49,18 @@ export const readFileTool: Tool = {
     }
     return { allowed: true };
   },
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const inputPath = input.path as string;
     const safePath = resolveInWorkspace(inputPath);
     if (!safePath) {
-      return `Error reading file: path outside workspace`;
+      return { output: "Error reading file: path outside workspace" };
     }
     try {
       const file = Bun.file(safePath);
       const content = await file.text();
-      return content;
+      return { output: content, format: "text" };
     } catch (e) {
-      return `Error reading file: ${e instanceof Error ? e.message : String(e)}`;
+      return { output: `Error reading file: ${e instanceof Error ? e.message : String(e)}` };
     }
   },
 };

@@ -16,6 +16,11 @@ export interface GenericTool {
 export interface Provider {
   streamResponse(
     messages: GenericMessage[],
-    tools?: GenericTool[]
+    tools?: GenericTool[],
+    options?: {
+      signal?: AbortSignal;
+      sessionId?: string;
+      permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
+    }
   ): AsyncGenerator<string>;
 }

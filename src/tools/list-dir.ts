@@ -1,6 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import type { Tool, ToolContext, PermissionDecision } from "./base";
+import type { Tool, PermissionDecision, ToolResult } from "./base";
 
 const WORKSPACE_ROOT = process.cwd();
 
@@ -32,6 +32,11 @@ export const listDirTool: Tool = {
   isDestructive(): boolean {
     return false;
   },
+  isConcurrencySafe(): boolean {
+    return true;
+  },
+  maxResultSizeChars: 20_000,
+  tags: ["file", "read-only"],
   async checkPermissions(
     input: Record<string, unknown>
   ): Promise<PermissionDecision> {
@@ -42,11 +47,11 @@ export const listDirTool: Tool = {
     }
     return { allowed: true };
   },
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const inputPath = (input.path as string) || ".";
     const safePath = resolveInWorkspace(inputPath);
     if (!safePath) {
-      return "Error: path outside workspace";
+      return { output: "Error: path outside workspace" };
     }
     try {
       const entries = await fs.readdir(safePath, { withFileTypes: true });
@@ -54,9 +59,9 @@ export const listDirTool: Tool = {
         const type = entry.isDirectory() ? "/" : "";
         return `  ${entry.name}${type}`;
       });
-      return `${safePath}\n${lines.join("\n")}`;
+      return { output: `${safePath}\n${lines.join("\n")}` };
     } catch (e) {
-      return `Error listing directory: ${e instanceof Error ? e.message : String(e)}`;
+      return { output: `Error listing directory: ${e instanceof Error ? e.message : String(e)}` };
     }
   },
 };

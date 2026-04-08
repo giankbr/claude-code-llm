@@ -1,0 +1,3 @@
+{"toolName":"echo_tool","sessionId":"default-session","startedAt":1775647054800,"durationMs":3,"success":true,"inputSize":20,"outputSize":20}
+{"toolName":"read_file","sessionId":"1775647041969-ev5vd2","startedAt":1775647056149,"durationMs":3,"success":true,"inputSize":25,"outputSize":14772}
+{"toolName":"json_pretty","sessionId":"default-session","startedAt":1775647081661,"durationMs":1,"success":true,"inputSize":46,"outputSize":39}

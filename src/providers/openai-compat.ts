@@ -3,6 +3,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat";
 import type { Provider, GenericMessage, GenericTool } from "./base";
 import { executeTool } from "../tools/registry";
 import { getSystemPrompt } from "../prompts";
+const MAX_TOOL_DEPTH = 10;
 
 function parseToolArguments(rawArguments: string): Record<string, unknown> {
   const raw = rawArguments.trim();
@@ -64,14 +65,24 @@ export class OpenAICompatProvider implements Provider {
 
   async *streamResponse(
     messages: GenericMessage[],
-    tools: GenericTool[] = []
+    tools: GenericTool[] = [],
+    options?: {
+      signal?: AbortSignal;
+      sessionId?: string;
+      permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
+    }
   ): AsyncGenerator<string> {
-    yield* this._streamResponseInternal(messages, tools);
+    yield* this._streamResponseInternal(messages, tools, options);
   }
 
   private async *_streamResponseInternal(
     messages: GenericMessage[],
-    tools: GenericTool[]
+    tools: GenericTool[],
+    options?: {
+      signal?: AbortSignal;
+      sessionId?: string;
+      permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
+    }
   ): AsyncGenerator<string> {
     const openaiMessages: any[] = [
       { role: "system", content: getSystemPrompt() },
@@ -94,7 +105,15 @@ export class OpenAICompatProvider implements Provider {
       },
     }));
 
+    let depth = 0;
     while (true) {
+      if (depth > MAX_TOOL_DEPTH) {
+        yield "\nTool loop depth limit reached.\n";
+        break;
+      }
+      if (options?.signal?.aborted) {
+        throw new Error("Cancelled by user");
+      }
       let fullResponse = "";
       let toolCalls: Array<{
         id: string;
@@ -113,6 +132,9 @@ export class OpenAICompatProvider implements Provider {
       } as any)) as unknown as AsyncIterable<any>;
 
       for await (const chunk of stream) {
+        if (options?.signal?.aborted) {
+          throw new Error("Cancelled by user");
+        }
         if (!chunk.choices[0]) continue;
 
         const delta = chunk.choices[0].delta;
@@ -176,7 +198,9 @@ export class OpenAICompatProvider implements Provider {
         yield `[TOOL:${toolCall.name}:${JSON.stringify(toolCall.input)}]`;
         const result = await executeTool(toolCall.name, toolCall.input, {
           workspaceRoot: process.cwd(),
-          permissionMode: "default",
+          permissionMode: options?.permissionMode ?? "default",
+          sessionId: options?.sessionId,
+          signal: options?.signal,
         });
         yield `[RESULT:${result}]`;
 
@@ -186,6 +210,7 @@ export class OpenAICompatProvider implements Provider {
           content: result,
         });
       }
+      depth += 1;
     }
   }
 }

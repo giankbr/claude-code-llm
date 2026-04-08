@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { Tool, ToolContext, PermissionDecision } from "./base";
+import type { Tool, PermissionDecision, ToolResult } from "./base";
 
 const WORKSPACE_ROOT = process.cwd();
 
@@ -49,6 +49,11 @@ export const bashTool: Tool = {
   isDestructive(): boolean {
     return true;
   },
+  isConcurrencySafe(): boolean {
+    return false;
+  },
+  maxResultSizeChars: 40_000,
+  tags: ["shell", "destructive"],
   async checkPermissions(
     input: Record<string, unknown>
   ): Promise<PermissionDecision> {
@@ -73,7 +78,7 @@ export const bashTool: Tool = {
 
     return { allowed: true };
   },
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const command = input.command as string;
     try {
       const proc = Bun.spawnSync(["bash", "-c", command], {
@@ -82,9 +87,9 @@ export const bashTool: Tool = {
       const stdout = new TextDecoder().decode(proc.stdout);
       const stderr = new TextDecoder().decode(proc.stderr);
       const output = stdout + (stderr ? "\n[stderr]\n" + stderr : "");
-      return output.trim() || "(no output)";
+      return { output: output.trim() || "(no output)" };
     } catch (e) {
-      return `Error running command: ${e instanceof Error ? e.message : String(e)}`;
+      return { output: `Error running command: ${e instanceof Error ? e.message : String(e)}` };
     }
   },
 };

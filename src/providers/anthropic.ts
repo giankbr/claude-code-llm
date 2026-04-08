@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, Tool } from "@anthropic-ai/sdk/resources/messages";
 import type { Provider, GenericMessage, GenericTool } from "./base";
-import { TOOLS, executeTool } from "../tools/registry";
+import { executeTool, getGenericTools } from "../tools/registry";
 import { getSystemPrompt } from "../prompts";
 
 const client = new Anthropic({
@@ -9,11 +9,17 @@ const client = new Anthropic({
 });
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
+const MAX_TOOL_DEPTH = 10;
 
 export class AnthropicProvider implements Provider {
   async *streamResponse(
     messages: GenericMessage[],
-    tools: GenericTool[] = TOOLS
+    tools: GenericTool[] = getGenericTools(),
+    options?: {
+      signal?: AbortSignal;
+      sessionId?: string;
+      permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
+    }
   ): AsyncGenerator<string> {
     // Convert generic messages to Anthropic format
     const anthropicMessages: MessageParam[] = messages.map((m) => ({
@@ -28,14 +34,27 @@ export class AnthropicProvider implements Provider {
       input_schema: t.input_schema as any,
     }));
 
-    yield* this._streamResponseInternal(anthropicMessages, anthropicTools, messages);
+    yield* this._streamResponseInternal(anthropicMessages, anthropicTools, messages, 0, options);
   }
 
   private async *_streamResponseInternal(
     anthropicMessages: MessageParam[],
     anthropicTools: Tool[],
-    genericMessages: GenericMessage[]
+    genericMessages: GenericMessage[],
+    depth: number,
+    options?: {
+      signal?: AbortSignal;
+      sessionId?: string;
+      permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
+    }
   ): AsyncGenerator<string> {
+    if (depth > MAX_TOOL_DEPTH) {
+      yield "\nTool loop depth limit reached.\n";
+      return;
+    }
+    if (options?.signal?.aborted) {
+      throw new Error("Cancelled by user");
+    }
     let fullResponse = "";
     let toolCalls: Array<{
       id: string;
@@ -52,6 +71,9 @@ export class AnthropicProvider implements Provider {
     });
 
     for await (const chunk of stream) {
+      if (options?.signal?.aborted) {
+        throw new Error("Cancelled by user");
+      }
       if (
         chunk.type === "content_block_delta" &&
         chunk.delta.type === "text_delta"
@@ -87,7 +109,9 @@ export class AnthropicProvider implements Provider {
 
         const result = await executeTool(toolCall.name, toolCall.input, {
           workspaceRoot: process.cwd(),
-          permissionMode: "default",
+          permissionMode: options?.permissionMode ?? "default",
+          sessionId: options?.sessionId,
+          signal: options?.signal,
         });
         yield `[RESULT:${result}]`;
 
@@ -117,7 +141,9 @@ export class AnthropicProvider implements Provider {
       yield* this._streamResponseInternal(
         updatedAnthropicMessages,
         anthropicTools,
-        genericMessages
+        genericMessages,
+        depth + 1,
+        options
       );
     } else {
       // Update the generic messages array with the final response

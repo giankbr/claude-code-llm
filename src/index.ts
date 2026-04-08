@@ -15,6 +15,8 @@ import {
 } from "./ui";
 import { isCommand, handleCommand } from "./commands/registry";
 import { executeTool } from "./tools/registry";
+import { autoSuggest } from "./suggestions";
+import { analytics } from "./analytics";
 
 const messages: GenericMessage[] = [];
 const SENGIKU_DIR = path.join(process.cwd(), ".sengiku");
@@ -26,7 +28,40 @@ type LearningMemory = {
   projectGoal: string;
   codingStyle: string[];
   preferredCommands: string[];
+  frequentTools: string[];
+  lastActive: string;
+  preferredWorkflow: string;
 };
+
+function getSessionId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function updateMemoryFromAnalytics(): void {
+  if (!existsSync(SENGIKU_MEMORY_FILE)) {
+    return;
+  }
+  try {
+    const raw = readFileSync(SENGIKU_MEMORY_FILE, "utf8");
+    const memory = JSON.parse(raw) as LearningMemory;
+    const summary = analytics.getSummary();
+    const frequentTools = Object.entries(summary.byTool)
+      .sort((a, b) => b[1].calls - a[1].calls)
+      .slice(0, 5)
+      .map(([toolName]) => toolName);
+    const updated: LearningMemory = {
+      ...memory,
+      frequentTools,
+      lastActive: new Date().toISOString(),
+      preferredWorkflow:
+        memory.preferredWorkflow ||
+        "tool-first execution with iterative follow-up",
+    };
+    writeFileSync(SENGIKU_MEMORY_FILE, JSON.stringify(updated, null, 2));
+  } catch {
+    // ignore memory update failures
+  }
+}
 
 function parseLooseJsonObject(input: string): Record<string, unknown> | null {
   const trimmed = input.trim();
@@ -123,6 +158,9 @@ function ensureLearningFiles(): void {
       projectGoal: "Build a reliable local coding CLI agent.",
       codingStyle: ["TypeScript strict", "small functions", "clear error messages"],
       preferredCommands: ["bun run typecheck", "bun run index.ts"],
+      frequentTools: [],
+      lastActive: new Date().toISOString(),
+      preferredWorkflow: "tool-first execution with iterative follow-up",
     };
     writeFileSync(SENGIKU_MEMORY_FILE, JSON.stringify(initialMemory, null, 2));
   }
@@ -147,6 +185,8 @@ function getLearningContext(): string {
           `- Goal: ${memory.projectGoal}`,
           `- Coding style: ${(memory.codingStyle || []).join(", ")}`,
           `- Preferred commands: ${(memory.preferredCommands || []).join(", ")}`,
+          `- Frequent tools: ${(memory.frequentTools || []).join(", ")}`,
+          `- Preferred workflow: ${memory.preferredWorkflow || "n/a"}`,
         ].join("\n")
       );
     }
@@ -158,6 +198,17 @@ function getLearningContext(): string {
 }
 
 function buildModelInput(userInput: string): string {
+  if (!isLikelyActionRequest(userInput)) {
+    return [
+      "Casual chat mode:",
+      "- Respond naturally and briefly.",
+      "- Do not force project/task framing.",
+      "- Ask follow-up only when user asks for help.",
+      "",
+      `User message: ${userInput}`,
+    ].join("\n");
+  }
+
   const ctx = getLearningContext();
   if (!ctx) {
     return userInput;
@@ -227,6 +278,7 @@ function getContext() {
 
 async function main() {
   ensureLearningFiles();
+  const sessionId = getSessionId();
   const context = getContext();
   printHeader(context);
 
@@ -243,6 +295,11 @@ async function main() {
 
     if (!input.trim()) {
       continue;
+    }
+
+    const suggestions = autoSuggest(input);
+    if (isLikelyActionRequest(input) && suggestions.length > 0) {
+      console.log(colors.dim(`Suggested tools: ${suggestions.join(", ")}`));
     }
 
 
@@ -267,6 +324,9 @@ async function main() {
 
 
     const modelInput = buildModelInput(input);
+    const controller = new AbortController();
+    const onSigint = () => controller.abort();
+    process.once("SIGINT", onSigint);
     messages.push({
       role: "user",
       content: modelInput,
@@ -282,7 +342,11 @@ async function main() {
     spinner.start("Thinking...");
 
     try {
-      for await (const token of streamResponse(messages)) {
+      for await (const token of streamResponse(messages, undefined, {
+        signal: controller.signal,
+        sessionId,
+        permissionMode: "default",
+      })) {
 
         if (token.startsWith("[TOOL:")) {
           spinner.stop();
@@ -337,6 +401,12 @@ async function main() {
           break;
         }
 
+        if (!isLikelyActionRequest(input)) {
+          console.log(renderMarkdown(assistantText));
+          console.log();
+          break;
+        }
+
         if (fallbackRound === 0) {
           if (!hasPrintedToolSection) {
             printToolSectionHeader();
@@ -352,9 +422,15 @@ async function main() {
             hasPrintedToolSection = true;
           }
           printToolCall(call.name, call.arguments);
-          const result = await executeTool(call.name, call.arguments);
+          const result = await executeTool(call.name, call.arguments, {
+            workspaceRoot: process.cwd(),
+            permissionMode: "default",
+            sessionId,
+            signal: controller.signal,
+          });
           printToolResult(call.name, result, Date.now() - startedAt);
           executedAnyTool = true;
+          updateMemoryFromAnalytics();
 
           messages.push({
             role: "user",
@@ -370,7 +446,11 @@ async function main() {
 
         let followUp = "";
         spinner.start("Finalizing...");
-        for await (const token of streamResponse(messages)) {
+        for await (const token of streamResponse(messages, undefined, {
+          signal: controller.signal,
+          sessionId,
+          permissionMode: "default",
+        })) {
           followUp += token;
         }
         spinner.stop();
@@ -391,7 +471,11 @@ async function main() {
 
         spinner.start("Retrying with tool enforcement...");
         let retryResponse = "";
-        for await (const token of streamResponse(messages)) {
+        for await (const token of streamResponse(messages, undefined, {
+          signal: controller.signal,
+          sessionId,
+          permissionMode: "default",
+        })) {
           retryResponse += token;
         }
         spinner.stop();
@@ -409,8 +493,14 @@ async function main() {
           for (const call of retryToolCalls) {
             const startedAt = Date.now();
             printToolCall(call.name, call.arguments);
-            const result = await executeTool(call.name, call.arguments);
+            const result = await executeTool(call.name, call.arguments, {
+              workspaceRoot: process.cwd(),
+              permissionMode: "default",
+              sessionId,
+              signal: controller.signal,
+            });
             printToolResult(call.name, result, Date.now() - startedAt);
+            updateMemoryFromAnalytics();
             messages.push({
               role: "user",
               content: `Tool ${call.name} returned: ${result}`,
@@ -428,11 +518,14 @@ async function main() {
       if (messages[messages.length - 1]?.role === "user") {
         messages.pop();
       }
+    } finally {
+      process.removeListener("SIGINT", onSigint);
     }
   }
 }
 
 main().catch((error) => {
+  analytics.flush();
   if (isExitPromptError(error)) {
     spinner.stop();
     console.log(colors.dim("\nBye!\n"));
