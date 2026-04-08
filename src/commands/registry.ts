@@ -9,6 +9,7 @@ import { toolsCommand } from "./tools";
 import { analyticsCommand } from "./analytics";
 import { configCommand } from "./config";
 import { docsCommand } from "./docs";
+import { initCommand } from "./init";
 import { colors } from "../ui";
 
 const COMMANDS: Command[] = [
@@ -21,6 +22,7 @@ const COMMANDS: Command[] = [
   analyticsCommand,
   configCommand,
   docsCommand,
+  initCommand,
 ];
 
 export function isCommand(input: string): boolean {

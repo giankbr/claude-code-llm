@@ -1,5 +1,6 @@
 {
   "name": "agent-ai-llm",
+  "version": "2.1.96",
   "module": "index.ts",
   "type": "module",
   "private": true,

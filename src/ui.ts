@@ -117,7 +117,7 @@ export function printHeader(context?: { provider: string; model: string; cwd?: s
 
   const rightLines = [
     " Tips for getting started",
-    " Run /init to create CLAUDE.md file with instructions.",
+    " Run /init to create SENGIKU.md file with instructions.",
     "",
     " Recent activity",
     " No recent activity",
