@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
@@ -15,6 +18,15 @@ function getConfiguredLevel(): LogLevel {
   return "warn";
 }
 
+const LOG_DIR = path.join(process.cwd(), ".sengiku");
+const LOG_FILE = path.join(LOG_DIR, "debug.log");
+
+function ensureLogDir(): void {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+  } catch {}
+}
+
 class Logger {
   private minLevel = getConfiguredLevel();
 
@@ -29,15 +41,11 @@ class Logger {
       ...(data ? { data } : {}),
     };
     const line = JSON.stringify(payload);
-    if (level === "error") {
-      console.error(line);
-      return;
-    }
-    if (level === "warn") {
-      console.warn(line);
-      return;
-    }
-    console.log(line);
+    // Write to file instead of console to avoid polluting chat output
+    ensureLogDir();
+    try {
+      appendFileSync(LOG_FILE, line + "\n");
+    } catch {}
   }
 
   debug(message: string, data?: Record<string, unknown>): void {

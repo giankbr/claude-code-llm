@@ -214,7 +214,8 @@ async function repairArgsWithModelCall(
   required: string[],
   userRequest: string,
   lastWrittenPath?: string,
-  lastMentionedFilePath?: string
+  lastMentionedFilePath?: string,
+  conversationContext?: string
 ): Promise<{ repaired: Record<string, unknown>; wasRepaired: boolean }> {
   let missing = required.filter(
     (f) => !(f in args) || args[f] === undefined || args[f] === null || args[f] === ""
@@ -253,24 +254,41 @@ async function repairArgsWithModelCall(
       }
       if (!currentContent) return { repaired: args, wasRepaired: false };
 
+      const contextBlock = conversationContext
+        ? `\nConversation context (what the user has asked so far):\n${conversationContext}\n`
+        : "";
       const editPrompt =
-        `User wants to: "${userRequest}"\n\n` +
-        `Current file (${filePath}):\n${currentContent}\n\n` +
-        `Provide ONLY the complete updated file content with all changes applied. No explanation, no markdown fences:`;
+        `You are editing the file "${filePath}".${contextBlock}\n` +
+        `The user's latest request: "${userRequest}"\n\n` +
+        `Current file content:\n${currentContent}\n\n` +
+        `IMPORTANT RULES:\n` +
+        `- Output ONLY the complete updated file content\n` +
+        `- Apply ALL requested changes\n` +
+        `- Keep ALL existing content that was not asked to be changed\n` +
+        `- The output must be a complete, valid file (including closing tags)\n` +
+        `- No explanations, no markdown fences, no commentary\n` +
+        `- Start with the first line of the file and end with the last line`;
+      // Scale token limit based on file size to prevent truncation
+      const estimatedTokens = Math.ceil(currentContent.length / 3);
+      const repairMaxTokens = Math.max(8192, estimatedTokens + 2048);
       try {
         const editResponse = await (client.chat.completions.create as Function)({
           model,
           messages: [{ role: "user", content: editPrompt }],
-          max_tokens: 4096,
+          max_tokens: repairMaxTokens,
           stream: false,
         });
         const newContent: string =
           editResponse?.choices?.[0]?.message?.content?.trim() ?? "";
         if (!newContent) return { repaired: args, wasRepaired: false };
-        const cleaned = newContent
+        let cleaned = newContent
           .replace(/^```[a-z]*\n?/i, "")
           .replace(/```\s*$/i, "")
           .trim();
+        // Truncation guard: if original had closing </html> but repair doesn't, reject
+        if (currentContent.includes("</html>") && !cleaned.includes("</html>")) {
+          return { repaired: args, wasRepaired: false };
+        }
         return {
           repaired: { ...args, find: currentContent, replace: cleaned },
           wasRepaired: true,
@@ -539,6 +557,26 @@ export class OpenAICompatProvider implements Provider {
         .filter((toolCall) => isValidToolName(toolCall.name));
 
       if (validToolCalls.length === 0) {
+        // Hallucination guard: model claims "done/updated/created" but made no tool calls
+        const claimsDone =
+          /\b(done|selesai|sudah|berhasil|successfully|updated|created|ditambahkan|diubah|diganti)\b/i.test(
+            fullResponse
+          ) &&
+          /\b(file|index\.html|\.html|\.ts|\.js|\.css|\.json)\b/i.test(fullResponse);
+        if (claimsDone && depth < MAX_TOOL_DEPTH - 1) {
+          depth += 1;
+          openaiMessages.push(
+            { role: "assistant", content: fullResponse },
+            {
+              role: "user",
+              content:
+                "System feedback: You described changes but did NOT actually call any tool. " +
+                "You MUST call edit_file or write_file to apply changes. " +
+                "Do it now — read the file with read_file, then call edit_file with path, find, and replace.",
+            }
+          );
+          continue;
+        }
         break;
       }
 
@@ -594,6 +632,12 @@ export class OpenAICompatProvider implements Provider {
           (f) => !(f in finalArgs) || finalArgs[f] === undefined || finalArgs[f] === null || finalArgs[f] === ""
         );
         if (stillMissing.length > 0) {
+          // Build conversation context from user messages for repair quality
+          const convContext = messages
+            .filter((m) => m.role === "user")
+            .slice(-5)
+            .map((m) => `- ${m.content.slice(0, 200)}`)
+            .join("\n");
           const modelRepair = await repairArgsWithModelCall(
             this.client,
             this.model,
@@ -602,7 +646,8 @@ export class OpenAICompatProvider implements Provider {
             requiredFields,
             lastUserPrompt,
             lastWrittenPath,
-            lastMentionedFilePath
+            lastMentionedFilePath,
+            convContext
           );
           if (modelRepair.wasRepaired) {
             finalArgs = modelRepair.repaired;
