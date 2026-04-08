@@ -90,6 +90,14 @@ Usage:
     if (!pattern?.trim()) {
       return { allowed: false, reason: "Missing pattern argument" };
     }
+    if (pattern.length > 200) {
+      return { allowed: false, reason: "Pattern too long; keep regex under 200 chars" };
+    }
+    const startPath = (input.start_path as string) || ".";
+    const safePath = resolveInWorkspace(startPath);
+    if (!safePath) {
+      return { allowed: false, reason: "start_path outside workspace" };
+    }
     return { allowed: true };
   },
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
@@ -106,7 +114,11 @@ Usage:
       const results = await findFilesRecursive(safePath, regex);
 
       if (results.length === 0) {
-        return { output: `No files matching pattern: ${pattern}` };
+        return {
+          output: `No files matching pattern: ${pattern}`,
+          format: "json",
+          structuredData: { matches: [], pattern },
+        };
       }
 
       return {

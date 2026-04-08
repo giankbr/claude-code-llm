@@ -13,9 +13,24 @@ const DANGEROUS_BASH_PATTERNS = [
   /\bpoweroff\b/,
 ];
 
+const DISALLOWED_UTILITY_PATTERNS = [
+  /\bfind\b/,
+  /\bgrep\b/,
+  /\bcat\b/,
+  /\bhead\b/,
+  /\btail\b/,
+  /\bsed\b/,
+  /\bawk\b/,
+  /\becho\b/,
+];
+
 function isDangerousCommand(command: string): boolean {
   const normalized = command.toLowerCase().trim();
   return DANGEROUS_BASH_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function usesDisallowedUtility(command: string): boolean {
+  return DISALLOWED_UTILITY_PATTERNS.some((pattern) => pattern.test(command));
 }
 
 function hasAbsolutePathOutsideWorkspace(command: string): boolean {
@@ -83,6 +98,13 @@ Instructions:
       return {
         allowed: false,
         reason: `Blocked potentially destructive command: ${command}`,
+      };
+    }
+
+    if (usesDisallowedUtility(command)) {
+      return {
+        allowed: false,
+        reason: "Blocked disallowed shell utility. Use dedicated tools instead.",
       };
     }
 

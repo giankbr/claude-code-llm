@@ -1,8 +1,12 @@
 import { PROMPT_MODULES, buildPromptHeader } from "./prompt-modules";
+import { buildToolPromptBundle, TOOL_PROMPT_CATALOG } from "./tool-prompts";
 
 function buildModularCodePrompt(): string {
   const stablePrefix = PROMPT_MODULES.filter((module) => module.stable);
   const dynamicSuffix = PROMPT_MODULES.filter((module) => !module.stable);
+  const toolPromptBundle = buildToolPromptBundle(
+    Object.keys(TOOL_PROMPT_CATALOG).map((name) => ({ name }))
+  );
 
   return [
     "Sengiku Prompt Assembly (Modular)",
@@ -12,6 +16,9 @@ function buildModularCodePrompt(): string {
     "",
     "Dynamic Suffix:",
     buildPromptHeader(dynamicSuffix),
+    "",
+    "Tool-Specific Prompt Bundle:",
+    toolPromptBundle,
     "",
     "Runtime policy:",
     "- Use only registered tools and follow permission checks.",

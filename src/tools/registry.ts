@@ -11,6 +11,7 @@ import { resolvePermission } from "../permissions";
 import { analytics } from "../analytics";
 import { loadPluginTools } from "./loader";
 import path from "node:path";
+import { composeToolDescription } from "../tool-prompts";
 
 export class ToolPermissionError extends Error {}
 export class ToolValidationError extends Error {}
@@ -32,10 +33,6 @@ const RETRYABLE_TOOLS = new Set(["bash", "search_files", "agent"]);
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxAttempts: 3,
   backoffMs: 500,
-};
-
-const FALLBACK_MAP: Record<string, string> = {
-  search_files: "bash",
 };
 
 class ToolRegistry {
@@ -83,7 +80,7 @@ export async function initializeTools(): Promise<void> {
 export function getGenericTools(): GenericTool[] {
   return registry.getAll().map((t) => ({
     name: t.name,
-    description: t.description,
+    description: composeToolDescription(t.description, t.name),
     input_schema: t.input_schema,
   }));
 }
@@ -121,6 +118,41 @@ function mapPseudoToolCall(
       mappedName: "bash",
       mappedInput: { command: `mkdir -p '${escapedPath}'` },
     };
+  }
+  return null;
+}
+
+const DISALLOWED_BASH_PATTERNS = [
+  /\bfind\b/,
+  /\bgrep\b/,
+  /\bcat\b/,
+  /\bhead\b/,
+  /\btail\b/,
+  /\bsed\b/,
+  /\bawk\b/,
+  /\becho\b/,
+];
+
+function isExplicitlyAllowedShellPattern(command: string): boolean {
+  return /explicitly required|explicitly instructed/i.test(command);
+}
+
+function validateStrictPolicy(
+  toolName: string,
+  input: Record<string, unknown>
+): string | null {
+  if (toolName !== "bash") {
+    return null;
+  }
+  const command = typeof input.command === "string" ? input.command : "";
+  if (!command.trim()) {
+    return "Policy blocked: missing bash command input.";
+  }
+  if (
+    DISALLOWED_BASH_PATTERNS.some((pattern) => pattern.test(command)) &&
+    !isExplicitlyAllowedShellPattern(command)
+  ) {
+    return "Policy blocked: bash command uses a disallowed utility. Use dedicated tools instead.";
   }
   return null;
 }
@@ -182,6 +214,11 @@ export async function executeTool(
   }
 
   try {
+    const policyViolation = validateStrictPolicy(effectiveName, effectiveInput);
+    if (policyViolation) {
+      throw new ToolPermissionError(policyViolation);
+    }
+
     const toolPermission = await tool.checkPermissions(effectiveInput, ctx);
     if (!toolPermission.allowed) {
       throw new ToolPermissionError(toolPermission.reason || "unknown reason");
@@ -244,37 +281,6 @@ export async function executeTool(
       }
     }
 
-    const fallbackName = FALLBACK_MAP[effectiveName];
-    if (fallbackName) {
-      const fallbackTool = getTool(fallbackName);
-      if (fallbackTool) {
-        try {
-          const fallbackResult = await fallbackTool.execute(
-            {
-              command:
-                typeof input.pattern === "string"
-                  ? `find . -type f | rg "${String(input.pattern).replace(/"/g, '\\"')}"`
-                  : "find . -type f",
-            },
-            ctx
-          );
-          const output = clampResult(fallbackTool, fallbackResult).output;
-          analytics.record({
-            toolName: `${effectiveName}->${fallbackName}`,
-            sessionId,
-            agentId: ctx.agentId,
-            startedAt,
-            durationMs: Date.now() - startedAt,
-            success: true,
-            inputSize,
-            outputSize: Buffer.from(output).byteLength,
-          });
-          return output;
-        } catch {
-          // continue to default error output
-        }
-      }
-    }
     const message = `Tool ${effectiveName} failed: ${error instanceof Error ? error.message : String(error)}`;
     analytics.record({
       toolName: effectiveName,
