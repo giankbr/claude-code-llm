@@ -3,6 +3,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat";
 import { Provider, GenericMessage, GenericTool } from "./base";
 import { executeTool } from "../tools";
 import { colors } from "../ui";
+import { getSystemPrompt } from "../prompts";
 
 export class OpenAICompatProvider implements Provider {
   private client: OpenAI;
@@ -81,8 +82,7 @@ export class OpenAICompatProvider implements Provider {
       messages: openaiMessages,
       stream: true,
       max_tokens: 2048,
-      system:
-        "You are a helpful assistant. When the user asks you to read files, write files, or run commands, use the available tools.",
+      system: getSystemPrompt(),
       ...(openaiTools.length > 0 && { tools: openaiTools }),
     } as any);
 

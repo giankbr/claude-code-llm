@@ -1,8 +1,9 @@
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, Tool } from "@anthropic-ai/sdk/resources/messages";
 import { Provider, GenericMessage, GenericTool } from "./base";
 import { TOOLS, executeTool } from "../tools";
 import { colors } from "../ui";
+import { getSystemPrompt } from "../prompts";
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -46,8 +47,7 @@ export class AnthropicProvider implements Provider {
     const stream = await client.messages.stream({
       model: MODEL,
       max_tokens: 2048,
-      system:
-        "You are a helpful assistant. When the user asks you to read files, write files, or run commands, use the available tools.",
+      system: getSystemPrompt(),
       messages: anthropicMessages,
       tools: anthropicTools,
     });
