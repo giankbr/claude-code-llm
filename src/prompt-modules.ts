@@ -49,6 +49,19 @@ const MODULE_INDEX: Array<{ id: string; title: string; fallback: string }> = [
   { id: "30", title: "Prompt Suggestion", fallback: "Suggest likely next useful command when confidence is high." },
 ];
 
+function normalizePromptBranding(content: string): string {
+  return content
+    .replace(/\bClaude Code\b/g, "Sengiku Code")
+    .replace(/\bClaude\b/g, "Sengiku")
+    .replace(/\bclaude code\b/g, "sengiku code")
+    .replace(/\bclaude\b/g, "sengiku")
+    .replace(/~\/\.claude\b/g, "~/.sengiku")
+    .replace(/\/etc\/claude-code\b/g, "/etc/sengiku-code")
+    .replace(/\.claude\//g, ".sengiku/")
+    .replace(/<user_claude_md>/g, "<user_sengiku_md>")
+    .replace(/<\/user_claude_md>/g, "</user_sengiku_md>");
+}
+
 function loadPromptFileContent(id: string, fallback: string): string {
   if (!existsSync(PROMPTS_DIR)) {
     return fallback;
@@ -59,7 +72,7 @@ function loadPromptFileContent(id: string, fallback: string): string {
       return fallback;
     }
     const raw = readFileSync(path.join(PROMPTS_DIR, file), "utf8").trim();
-    return raw || fallback;
+    return raw ? normalizePromptBranding(raw) : fallback;
   } catch {
     return fallback;
   }
