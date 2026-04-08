@@ -4,7 +4,11 @@ import type { Provider, GenericMessage, GenericTool } from "./base";
 import { executeTool } from "../tools/registry";
 import { getSystemPromptForTask } from "../prompts";
 import { normalizeToolCallAlias } from "../tools/alias-map";
+import os from "os";
 const MAX_TOOL_DEPTH = 10;
+const MAX_SAME_TOOL_REPEAT = 3;
+const MAX_INVALID_TOOL_INPUTS = 3;
+const TOOL_COOLDOWN_THRESHOLD = 2;
 
 function parseToolArguments(rawArguments: string): Record<string, unknown> {
   const raw = rawArguments.trim();
@@ -15,7 +19,6 @@ function parseToolArguments(rawArguments: string): Record<string, unknown> {
   try {
     return JSON.parse(raw);
   } catch {
-    // Some local models add trailing text after the JSON body.
     const firstBrace = raw.indexOf("{");
     const lastBrace = raw.lastIndexOf("}");
     if (firstBrace >= 0 && lastBrace > firstBrace) {
@@ -28,6 +31,148 @@ function parseToolArguments(rawArguments: string): Record<string, unknown> {
     }
     return {};
   }
+}
+
+function isValidToolName(name: string): boolean {
+  return /^[a-zA-Z0-9_]+$/.test(name.trim());
+}
+
+function getUserOnlyText(prompt: string): string {
+  const requestMatch = prompt.match(/User request:\s*([\s\S]*)$/i);
+  if (requestMatch && requestMatch[1]) {
+    return requestMatch[1].trim();
+  }
+  const messageMatch = prompt.match(/User message:\s*([\s\S]*)$/i);
+  if (messageMatch && messageMatch[1]) {
+    return messageMatch[1].trim();
+  }
+  return prompt;
+}
+
+function selectHintSource(messages: GenericMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== "user") {
+      continue;
+    }
+    if (/^System (quality gate|feedback|guard):/i.test(msg.content)) {
+      continue;
+    }
+    return msg.content;
+  }
+  return "";
+}
+
+function normalizeHintPath(raw: string): string {
+  if (raw.startsWith("~/")) {
+    return `${os.homedir()}/${raw.slice(2)}`;
+  }
+  return raw;
+}
+
+function extractListDirPathHint(prompt: string): string | null {
+  const source = getUserOnlyText(prompt);
+  const tildePathMatch = source.match(/(~\/[^\s,]+)/);
+  if (tildePathMatch && tildePathMatch[1]) {
+    return normalizeHintPath(tildePathMatch[1].replace(/[.,]$/, ""));
+  }
+  const absolutePathMatch = source.match(/(\/[^\s,]+)/);
+  if (absolutePathMatch && absolutePathMatch[1]) {
+    return absolutePathMatch[1].replace(/[.,]$/, "");
+  }
+  const folderMatch = source.match(/\bfolder\s+([a-zA-Z0-9._/-]+)/i);
+  if (folderMatch && folderMatch[1]) {
+    return folderMatch[1];
+  }
+  const apiMatch = source.match(/\bapi\/?\b/i);
+  if (apiMatch) {
+    return "api";
+  }
+  return null;
+}
+
+function getRequiredFields(
+  toolName: string,
+  tools: GenericTool[]
+): string[] {
+  const tool = tools.find((t) => t.name === toolName);
+  return tool?.input_schema.required ?? [];
+}
+
+interface ExtractedToolArgs {
+  path?: string;
+  content?: string;
+  command?: string;
+}
+
+function extractArgsFromText(
+  toolName: string,
+  assistantText: string
+): ExtractedToolArgs {
+  const result: ExtractedToolArgs = {};
+
+  if (toolName === "write_file" || toolName === "edit_file") {
+    // Match filenames like index.html, src/app.ts, api/routes.js
+    const fileMatch = assistantText.match(
+      /(?:create|write|buat|file[:\s]+|path[:\s]+|→\s*)([A-Za-z0-9._/\\-]+\.[A-Za-z]{1,6})\b/i
+    );
+    if (!fileMatch) {
+      // Fallback: any bare filename mentioned in text
+      const bareFile = assistantText.match(
+        /\b([A-Za-z0-9_-]+\.(?:html|css|js|ts|json|md|txt|jsx|tsx|py|sh))\b/i
+      );
+      if (bareFile) result.path = bareFile[1];
+    } else {
+      result.path = fileMatch[1];
+    }
+    // Extract fenced code block content
+    const codeBlock = assistantText.match(/```[a-z]*\n?([\s\S]+?)```/i);
+    if (codeBlock && codeBlock[1]) {
+      result.content = codeBlock[1].trim();
+    }
+  }
+
+  if (toolName === "bash") {
+    const shellBlock = assistantText.match(
+      /```(?:bash|sh|shell|zsh)?\n?([\s\S]+?)```/i
+    );
+    if (shellBlock && shellBlock[1]) {
+      result.command = shellBlock[1].trim().split("\n")[0]?.trim();
+    }
+    if (!result.command) {
+      const inlineCmd = assistantText.match(/`([^`\n]{3,120})`/);
+      if (inlineCmd && inlineCmd[1]) {
+        result.command = inlineCmd[1].trim();
+      }
+    }
+  }
+
+  return result;
+}
+
+function repairToolArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  required: string[],
+  assistantText: string
+): { repaired: Record<string, unknown>; wasRepaired: boolean } {
+  const missing = required.filter(
+    (f) => !(f in args) || args[f] === undefined || args[f] === null || args[f] === ""
+  );
+  if (missing.length === 0) {
+    return { repaired: args, wasRepaired: false };
+  }
+  const extracted = extractArgsFromText(toolName, assistantText);
+  const repaired = { ...args };
+  let anyFilled = false;
+  for (const field of missing) {
+    const val = (extracted as Record<string, unknown>)[field];
+    if (val !== undefined && String(val).trim()) {
+      repaired[field] = val;
+      anyFilled = true;
+    }
+  }
+  return { repaired, wasRepaired: anyFilled };
 }
 
 export class OpenAICompatProvider implements Provider {
@@ -87,7 +232,9 @@ export class OpenAICompatProvider implements Provider {
       permissionMode?: "default" | "auto" | "plan" | "bypassPermissions";
     }
   ): AsyncGenerator<string> {
-    const lastUserPrompt = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    const hintSource = selectHintSource(messages);
+    const lastUserPrompt = hintSource || [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    const listDirPathHint = extractListDirPathHint(lastUserPrompt);
     const isGemma = /gemma/i.test(this.model);
     const maxTokens = isGemma ? 1536 : 2048;
     const openaiMessages: any[] = [
@@ -112,6 +259,11 @@ export class OpenAICompatProvider implements Provider {
     }));
 
     let depth = 0;
+    let previousToolFingerprint = "";
+    let repeatedSameToolCount = 0;
+    let invalidToolInputCount = 0;
+    const invalidByTool = new Map<string, number>();
+    const cooledDownTools = new Set<string>();
     while (true) {
       if (depth > MAX_TOOL_DEPTH) {
         yield "\nTool loop depth limit reached.\n";
@@ -179,18 +331,21 @@ export class OpenAICompatProvider implements Provider {
         toolCall.input = parseToolArguments(toolCall.rawArguments);
       }
 
-      if (toolCalls.length === 0) {
-        messages.push({
-          role: "assistant",
-          content: fullResponse,
-        });
+      const validToolCalls = toolCalls
+        .map((toolCall) => ({
+          ...toolCall,
+          name: toolCall.name.trim(),
+        }))
+        .filter((toolCall) => isValidToolName(toolCall.name));
+
+      if (validToolCalls.length === 0) {
         break;
       }
 
       openaiMessages.push({
         role: "assistant",
         content: fullResponse || "",
-        tool_calls: toolCalls.map((tc) => ({
+        tool_calls: validToolCalls.map((tc) => ({
           id: tc.id,
           type: "function",
           function: {
@@ -200,11 +355,59 @@ export class OpenAICompatProvider implements Provider {
         })),
       });
 
-      for (const toolCall of toolCalls) {
+      for (const toolCall of validToolCalls) {
         const normalized = normalizeToolCallAlias({
           name: toolCall.name,
           arguments: toolCall.input,
         });
+        if (cooledDownTools.has(normalized.name)) {
+          const cooledResult = `Tool ${normalized.name} temporarily cooled down due to repeated invalid arguments in this turn. Provide complete arguments and retry in next turn.`;
+          yield `[TOOL:${normalized.name}:${JSON.stringify(normalized.arguments)}]`;
+          yield `[RESULT:${cooledResult}]`;
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: cooledResult,
+          });
+          continue;
+        }
+        if (
+          normalized.name === "list_dir" &&
+          typeof normalized.arguments.path !== "string" &&
+          listDirPathHint
+        ) {
+          normalized.arguments = { ...normalized.arguments, path: listDirPathHint };
+        }
+
+        // Attempt text-extraction repair when required fields are missing
+        const requiredFields = getRequiredFields(normalized.name, tools);
+        const { repaired, wasRepaired } = repairToolArgs(
+          normalized.name,
+          normalized.arguments,
+          requiredFields,
+          fullResponse
+        );
+        if (wasRepaired) {
+          normalized.arguments = repaired;
+        }
+
+        const fingerprint = `${normalized.name}:${JSON.stringify(normalized.arguments)}`;
+        if (fingerprint === previousToolFingerprint) {
+          repeatedSameToolCount += 1;
+        } else {
+          repeatedSameToolCount = 1;
+          previousToolFingerprint = fingerprint;
+        }
+        if (repeatedSameToolCount > MAX_SAME_TOOL_REPEAT) {
+          yield "\nStopped repeated identical tool calls. Please provide explicit next action.\n";
+          messages.push({
+            role: "assistant",
+            content:
+              "Stopped repeated identical tool calls to avoid loop. Please refine the request with a specific target path or action.",
+          });
+          return;
+        }
+
         yield `[TOOL:${normalized.name}:${JSON.stringify(normalized.arguments)}]`;
         const result = await executeTool(normalized.name, normalized.arguments, {
           workspaceRoot: process.cwd(),
@@ -214,6 +417,36 @@ export class OpenAICompatProvider implements Provider {
           signal: options?.signal,
         });
         yield `[RESULT:${result}]`;
+
+        if (/Invalid .* input: Missing required field:/i.test(result)) {
+          invalidToolInputCount += 1;
+          const currentInvalid = (invalidByTool.get(normalized.name) || 0) + 1;
+          invalidByTool.set(normalized.name, currentInvalid);
+          if (currentInvalid >= TOOL_COOLDOWN_THRESHOLD) {
+            cooledDownTools.add(normalized.name);
+          }
+          const required = getRequiredFields(normalized.name, tools);
+          if (required.length > 0) {
+            openaiMessages.push({
+              role: "user",
+              content:
+                `System feedback: Tool ${normalized.name} was called with incomplete arguments. ` +
+                `Required fields: ${required.join(", ")}. ` +
+                "Retry with a complete tool call and never use empty arguments {}.",
+            });
+          }
+        } else {
+          invalidToolInputCount = 0;
+        }
+        if (invalidToolInputCount >= MAX_INVALID_TOOL_INPUTS) {
+          yield "\nStopped repeated invalid tool arguments. Provide complete tool arguments.\n";
+          messages.push({
+            role: "assistant",
+            content:
+              "Stopped repeated invalid tool arguments. Please provide complete arguments for each tool call (e.g. bash requires command).",
+          });
+          return;
+        }
 
         openaiMessages.push({
           role: "tool",
