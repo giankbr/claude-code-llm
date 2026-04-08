@@ -2,7 +2,6 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat";
 import { Provider, GenericMessage, GenericTool } from "./base";
 import { executeTool } from "../tools";
-import { colors } from "../ui";
 import { getSystemPrompt } from "../prompts";
 
 export class OpenAICompatProvider implements Provider {
@@ -135,14 +134,10 @@ export class OpenAICompatProvider implements Provider {
 
       // Process each tool call
       for (const toolCall of toolCalls) {
-        console.log(
-          colors.dim(
-            `\n[Tool: ${toolCall.name}] ${JSON.stringify(toolCall.input)}\n`
-          )
-        );
+        yield `[TOOL:${toolCall.name}:${JSON.stringify(toolCall.input)}]`;
 
         const result = await executeTool(toolCall.name, toolCall.input);
-        console.log(colors.dim(`[Result]\n${result}\n`));
+        yield `[RESULT:${result}]`;
 
         // Append tool result to messages
         messages.push({

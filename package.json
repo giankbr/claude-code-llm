@@ -12,7 +12,9 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.85.0",
     "@types/inquirer": "^9.0.9",
+    "cli-highlight": "^2.1.11",
     "inquirer": "^13.4.1",
+    "marked": "^18.0.0",
     "openai": "^6.33.0",
     "ora": "^9.3.0",
     "picocolors": "^1.1.1"

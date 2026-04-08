@@ -1,7 +1,7 @@
 import inquirer from "inquirer";
 import type { GenericMessage } from "./providers/base";
 import { streamResponse } from "./client";
-import { colors, spinner } from "./ui";
+import { colors, spinner, printHeader, printLabel, printToolCall, printToolResult, renderMarkdown } from "./ui";
 import { isCommand, handleCommand } from "./commands";
 
 const messages: GenericMessage[] = [];
@@ -25,11 +25,19 @@ function getReadableError(error: unknown): string {
     return "API key Anthropic tidak valid. Cek `ANTHROPIC_API_KEY` di file `.env`.";
   }
 
+  if (message.includes("connection refused")) {
+    const provider = process.env.PROVIDER || "anthropic";
+    if (provider === "ollama") {
+      return "Ollama server tidak jalan. Jalankan `ollama serve` di terminal lain.";
+    }
+    return "Connection failed. Check OPENAI_BASE_URL atau server mu.";
+  }
+
   return `Request gagal: ${message}`;
 }
 
 async function main() {
-  console.log(colors.dim("Sengiku AI CLI"));
+  printHeader();
   console.log(colors.dim("Type /help for commands, /exit to quit\n"));
 
   // eslint-disable-next-line no-constant-condition
@@ -66,6 +74,11 @@ async function main() {
       continue;
     }
 
+    // Print human label and input
+    printLabel("Human");
+    console.log(input);
+    console.log();
+
     // Add user message to history
     messages.push({
       role: "user",
@@ -73,26 +86,60 @@ async function main() {
     });
 
     // Stream response
-    let firstToken = true;
+    let fullResponse = "";
+    let currentToolCall: { name: string; input: Record<string, unknown> } | null = null;
+
     spinner.start();
 
     try {
       for await (const token of streamResponse(messages)) {
-        if (firstToken) {
-          spinner.stop();
-          firstToken = false;
+        // Check for tool call markers
+        if (token.startsWith("[TOOL:")) {
+          const match = token.match(/\[TOOL:([^:]+):(.+)\]/);
+          if (match && match.length > 2) {
+            const name = match[1] || "";
+            const inputStr = match[2] || "";
+            try {
+              currentToolCall = { name, input: JSON.parse(inputStr) };
+            } catch {
+              // Skip if JSON parse fails
+            }
+          }
+          continue;
         }
-        process.stdout.write(colors.assistant(token));
+
+        if (token.startsWith("[RESULT:")) {
+          const result = token.substring("[RESULT:".length).replace(/\]$/, "");
+          if (currentToolCall) {
+            printToolCall(currentToolCall.name, currentToolCall.input);
+            printToolResult(result);
+            currentToolCall = null;
+          }
+          continue;
+        }
+
+        // Accumulate response text
+        fullResponse += token;
       }
 
-      if (firstToken) {
-        spinner.stop();
-      }
+      spinner.stop();
 
-      console.log("\n");
+      // Print rendered markdown response
+      printLabel("Assistant");
+      console.log(renderMarkdown(fullResponse));
+
+      // Add assistant response to messages
+      messages.push({
+        role: "assistant",
+        content: fullResponse,
+      });
     } catch (error) {
       spinner.stop();
       console.log(colors.error(`\n${getReadableError(error)}\n`));
+      // Remove the user message if there was an error
+      if (messages[messages.length - 1]?.role === "user") {
+        messages.pop();
+      }
     }
   }
 }
