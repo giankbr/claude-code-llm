@@ -6,6 +6,7 @@ import { evaluatePolicy } from "../policy";
 import { validateToolInput } from "../tools/validate";
 import type { PermissionMode } from "../tools/base";
 import type { EvalResult } from "./report";
+import { getSystemPromptForTask, SYSTEM_PROMPTS } from "../prompts";
 
 type Scenario = Record<string, any>;
 
@@ -52,6 +53,16 @@ export async function runEvalScenarios(): Promise<EvalResult[]> {
           correlationId: `eval-${scenario.id}`,
         });
         ok = typeof output === "string" && output.includes(String(scenario.expectContains || ""));
+      } else if (scenario.kind === "prompt") {
+        let text = "";
+        if (scenario.scope === "code") {
+          text = getSystemPromptForTask(String(scenario.taskHint || ""));
+        } else if (scenario.scope === "general") {
+          text = SYSTEM_PROMPTS.general;
+        } else if (scenario.scope === "minimal") {
+          text = SYSTEM_PROMPTS.minimal;
+        }
+        ok = typeof text === "string" && text.includes(String(scenario.expectContains || ""));
       } else {
         throw new Error(`Unknown kind: ${scenario.kind}`);
       }

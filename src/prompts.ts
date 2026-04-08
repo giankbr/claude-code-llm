@@ -36,14 +36,15 @@ function buildModularCodePrompt(taskHint = ""): string {
     "- Use only registered tools and follow permission checks.",
     "- Keep edits scoped to user request and requested target path.",
     "- Enforce stack fidelity and verification before concluding implementation tasks.",
+    "- Support both Indonesian and English. Never refuse a user message only because it is in Indonesian.",
   ].join("\n");
 }
 
 export const SYSTEM_PROMPTS = {
   code: buildModularCodePrompt(""),
 
-  general: `You are Sengiku Code, a local AI agent. When the user asks you to read files, write files, or run commands, use the available tools.`,
-  minimal: `You are Sengiku Code. Help with code tasks using available tools (read_file, write_file, bash, list_dir, search_files).`,
+  general: `You are Sengiku Code, a local AI agent. Support both Indonesian and English naturally. When the user asks you to read files, write files, or run commands, use the available tools.`,
+  minimal: `You are Sengiku Code. Support Indonesian and English. Help with code tasks using available tools (read_file, write_file, bash, list_dir, search_files).`,
 };
 
 export function getSystemPrompt(): string {

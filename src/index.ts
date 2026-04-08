@@ -291,6 +291,18 @@ function looksLikeToolAvoidanceResponse(text: string): boolean {
   );
 }
 
+function isLikelyIndonesian(input: string): boolean {
+  return /\b(aku|gue|gua|gw|lu|kamu|gak|ga|nggak|enggak|bisa|tolong|coba|udah|belum|kenapa|gimana|apa|yang)\b/i.test(
+    input
+  );
+}
+
+function looksLikeLanguageRefusalResponse(text: string): boolean {
+  return /don't understand the language|do not understand the language|please repeat.*english|could you.*english|hanya bisa bahasa inggris|english only/i.test(
+    text
+  );
+}
+
 function isExitPromptError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -410,6 +422,7 @@ async function main() {
     const toolStartTime = Date.now();
     let hasPrintedToolSection = false;
     let executedAnyTool = false;
+    let languageRetryDone = false;
     const executedToolEvents: ExecutedToolEvent[] = [];
 
     spinner.start("Thinking...");
@@ -575,6 +588,40 @@ async function main() {
         }
 
         assistantText = followUp;
+      }
+
+      if (
+        !languageRetryDone &&
+        isLikelyIndonesian(input) &&
+        looksLikeLanguageRefusalResponse(assistantText)
+      ) {
+        languageRetryDone = true;
+        messages.push({
+          role: "user",
+          content:
+            "System feedback: User is speaking Indonesian. Reply in Indonesian (or bilingual) and do not ask the user to switch to English.",
+        });
+        spinner.start("Retrying with language guard...");
+        let retryLangResponse = "";
+        for await (const token of streamResponse(messages, undefined, {
+          signal: controller.signal,
+          sessionId,
+          correlationId,
+          permissionMode: sessionPermissionMode,
+        })) {
+          retryLangResponse += token;
+        }
+        spinner.stop();
+        if (retryLangResponse.trim()) {
+          assistantText = retryLangResponse;
+          messages.push({
+            role: "assistant",
+            content: retryLangResponse,
+          });
+          console.log(renderMarkdown(retryLangResponse));
+          printChatDivider();
+          console.log();
+        }
       }
 
       if (isLikelyActionRequest(input) && !executedAnyTool && looksLikeToolAvoidanceResponse(assistantText)) {
