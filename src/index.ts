@@ -5,7 +5,6 @@ import type { GenericMessage } from "./providers/base";
 import { streamResponse } from "./client";
 import {
   colors,
-  spinner,
   printHeader,
   printChatDivider,
   printToolSectionHeader,
@@ -14,6 +13,9 @@ import {
   renderMarkdown,
   promptSymbol,
   printPromptFooter,
+  startStickyLoading,
+  updateStickyLoading,
+  stopStickyLoading,
 } from "./ui";
 import { isCommand, handleCommand } from "./commands/registry";
 import { executeTool } from "./tools/registry";
@@ -483,7 +485,7 @@ async function main() {
     let consecutiveInvalidToolCalls = 0;
     const executedToolEvents: ExecutedToolEvent[] = [];
 
-    spinner.start("Thinking...");
+    startStickyLoading("Thinking");
 
     try {
       for await (const token of streamResponse(messages, undefined, {
@@ -494,7 +496,7 @@ async function main() {
       })) {
 
         if (token.startsWith("[TOOL:")) {
-          spinner.stop();
+          stopStickyLoading();
           const match = token.match(/\[TOOL:([^:]+):(.+)\]/);
           if (match && match.length > 2) {
             const name = match[1] || "";
@@ -533,7 +535,7 @@ async function main() {
         fullResponse += token;
       }
 
-      spinner.stop();
+      stopStickyLoading();
       let assistantText = stripToolMarkers(fullResponse);
       let fallbackRound = 0;
       const maxFallbackRounds = 5;
@@ -568,6 +570,7 @@ async function main() {
             hasPrintedToolSection = true;
           }
           console.log(colors.dim("Detected textual tool calls, running fallback."));
+          updateStickyLoading("Running fallback tools");
         }
 
         let unknownToolDetected = false;
@@ -663,7 +666,7 @@ async function main() {
         }
 
         let followUp = "";
-        spinner.start("Finalizing...");
+        updateStickyLoading("Finalizing response");
         for await (const token of streamResponse(messages, undefined, {
           signal: controller.signal,
           sessionId,
@@ -672,7 +675,7 @@ async function main() {
         })) {
           followUp += token;
         }
-        spinner.stop();
+        stopStickyLoading();
 
         if (!followUp.trim()) {
           break;
@@ -692,7 +695,7 @@ async function main() {
           content:
             "System feedback: User is speaking Indonesian. Reply in Indonesian (or bilingual) and do not ask the user to switch to English.",
         });
-        spinner.start("Retrying with language guard...");
+        updateStickyLoading("Retrying language guard");
         let retryLangResponse = "";
         for await (const token of streamResponse(messages, undefined, {
           signal: controller.signal,
@@ -702,7 +705,7 @@ async function main() {
         })) {
           retryLangResponse += token;
         }
-        spinner.stop();
+        stopStickyLoading();
         if (retryLangResponse.trim()) {
           assistantText = retryLangResponse;
           messages.push({
@@ -722,7 +725,7 @@ async function main() {
             "System feedback: You must execute available tools for this request now. Do not refuse access.",
         });
 
-        spinner.start("Retrying with tool enforcement...");
+        updateStickyLoading("Retrying tool enforcement");
         let retryResponse = "";
         for await (const token of streamResponse(messages, undefined, {
           signal: controller.signal,
@@ -732,7 +735,7 @@ async function main() {
         })) {
           retryResponse += token;
         }
-        spinner.stop();
+        stopStickyLoading();
         retryResponse = stripToolMarkers(retryResponse);
         const retryToolCalls = extractTextToolCalls(retryResponse);
         messages.push({
@@ -788,7 +791,7 @@ async function main() {
             content: `System quality gate: ${gateFeedback}`,
           });
 
-          spinner.start("Applying quality gate feedback...");
+          updateStickyLoading("Applying quality checks");
           let gatedResponse = "";
           for await (const token of streamResponse(messages, undefined, {
             signal: controller.signal,
@@ -798,7 +801,7 @@ async function main() {
           })) {
             gatedResponse += token;
           }
-          spinner.stop();
+          stopStickyLoading();
           gatedResponse = stripToolMarkers(gatedResponse);
 
           if (gatedResponse.trim()) {
@@ -813,7 +816,7 @@ async function main() {
         }
       }
     } catch (error) {
-      spinner.stop();
+      stopStickyLoading();
       console.log(colors.error(`\n${getReadableError(error)}\n`));
 
       if (messages[messages.length - 1]?.role === "user") {
@@ -828,7 +831,7 @@ async function main() {
 main().catch((error) => {
   analytics.flush();
   if (isExitPromptError(error)) {
-    spinner.stop();
+    stopStickyLoading();
     console.log(colors.dim("\nBye!\n"));
     process.exit(0);
   }

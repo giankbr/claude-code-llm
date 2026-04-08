@@ -22,6 +22,9 @@ export const colors = {
 
 export const spinner = ora();
 let cachedVersion: string | null = null;
+let stickyStartedAt = 0;
+let stickyLabel = "";
+let stickyTimer: ReturnType<typeof setInterval> | null = null;
 
 function getTerminalWidth(): number {
   return Math.max(process.stdout.columns || 80, 60);
@@ -172,6 +175,48 @@ export function printPromptFooter(): void {
   const gap = Math.max(1, width - left.length - right.length);
   console.log(colors.dim(`${left}${" ".repeat(gap)}${right}`));
   console.log();
+}
+
+export function printLoadingState(state: string): void {
+  console.log(colors.dim(`⏳ ${state}...`));
+}
+
+function formatStickyText(label: string): string {
+  const elapsedSec = ((Date.now() - stickyStartedAt) / 1000).toFixed(1);
+  return `${label} · ${elapsedSec}s`;
+}
+
+export function startStickyLoading(label: string): void {
+  stickyLabel = label;
+  stickyStartedAt = Date.now();
+  spinner.start(formatStickyText(stickyLabel));
+  if (stickyTimer) {
+    clearInterval(stickyTimer);
+  }
+  stickyTimer = setInterval(() => {
+    if (spinner.isSpinning) {
+      spinner.text = formatStickyText(stickyLabel);
+    }
+  }, 100);
+}
+
+export function updateStickyLoading(label: string): void {
+  stickyLabel = label;
+  if (!spinner.isSpinning) {
+    startStickyLoading(label);
+    return;
+  }
+  spinner.text = formatStickyText(stickyLabel);
+}
+
+export function stopStickyLoading(): void {
+  if (stickyTimer) {
+    clearInterval(stickyTimer);
+    stickyTimer = null;
+  }
+  if (spinner.isSpinning) {
+    spinner.stop();
+  }
 }
 
 export function printToolCall(name: string, input: Record<string, unknown>) {
