@@ -13,6 +13,7 @@ import {
   printToolResult,
   renderMarkdown,
   promptSymbol,
+  printPromptFooter,
 } from "./ui";
 import { isCommand, handleCommand } from "./commands/registry";
 import { executeTool } from "./tools/registry";
@@ -42,6 +43,16 @@ function getSessionId(): string {
 
 function getCorrelationId(): string {
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeShorthandWorkspacePath(input: string): string {
+  return input.replace(/(^|\s)\/([A-Za-z0-9._-]+)(?=\s|$|[.,;:!?])/g, (full, prefix, name) => {
+    const candidate = path.join(process.cwd(), name);
+    if (existsSync(candidate)) {
+      return `${prefix}${name}`;
+    }
+    return full;
+  });
 }
 
 function updateMemoryFromAnalytics(): void {
@@ -303,6 +314,51 @@ function looksLikeLanguageRefusalResponse(text: string): boolean {
   );
 }
 
+function stripToolMarkers(text: string): string {
+  return text
+    .replace(/\[TOOL:[^\]]*\]/g, "")
+    .replace(/\[RESULT:[\s\S]*?\](?=\[TOOL:|$)/g, "")
+    .replace(/\[RESULT:[\s\S]*$/g, "")
+    .trim();
+}
+
+function shouldRunQualityGate(userInput: string): boolean {
+  const isDirectoryInspection =
+    /\b(cek|check|lihat|list|isi)\b[\s\S]*\b(folder|direktori|directory|dir)\b/i.test(
+      userInput
+    ) || /\bcek\b[\s\S]*\bapi\/?\b/i.test(userInput);
+  if (isDirectoryInspection) {
+    return false;
+  }
+  return /\b(build|setup|buat|create|implement|refactor|fix|write|ubah|edit|generate|crud|hono|typescript)\b/i.test(
+    userInput
+  );
+}
+
+function wasLoopGuardTriggered(text: string): boolean {
+  return /Stopped repeated (identical tool calls|invalid tool arguments)/i.test(text);
+}
+
+function extractListDirPathHint(input: string): string | null {
+  const absolutePathMatch = input.match(/(\/[^\s,]+)/);
+  if (absolutePathMatch && absolutePathMatch[1]) {
+    return absolutePathMatch[1].replace(/[.,]$/, "");
+  }
+  const slashPathMatch = input.match(/\s(\/[a-zA-Z0-9._/-]+)/);
+  if (slashPathMatch && slashPathMatch[1]) {
+    return slashPathMatch[1].replace(/[.,]$/, "");
+  }
+  const folderNameMatch = input.match(/folder\s+([a-zA-Z0-9._-]+)/i);
+  if (folderNameMatch && folderNameMatch[1]) {
+    return folderNameMatch[1];
+  }
+  return null;
+}
+
+function isInvalidToolInputResult(result: string): boolean {
+  return /Invalid .* input: Missing required field:/i.test(result);
+}
+
 function isExitPromptError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -355,6 +411,7 @@ async function main() {
 
   while (true) {
     printChatDivider();
+    printPromptFooter();
     const { input } = await inquirer.prompt([
       {
         type: "input",
@@ -367,15 +424,16 @@ async function main() {
     if (!input.trim()) {
       continue;
     }
+    const normalizedInput = normalizeShorthandWorkspacePath(input.trim());
 
-    const suggestions = autoSuggest(input);
-    if (isLikelyActionRequest(input) && suggestions.length > 0) {
+    const suggestions = autoSuggest(normalizedInput);
+    if (isLikelyActionRequest(normalizedInput) && suggestions.length > 0) {
       console.log(colors.dim(`Suggested tools: ${suggestions.join(", ")}`));
     }
 
 
-    if (isCommand(input)) {
-      const result = await handleCommand(input, messages);
+    if (isCommand(normalizedInput)) {
+      const result = await handleCommand(normalizedInput, messages);
       if (result.message) {
         console.log(result.message);
       }
@@ -404,9 +462,8 @@ async function main() {
       continue;
     }
 
-
-    const modelInput = buildModelInput(input);
-    const requestedTargetDir = extractRequestedTargetDir(input);
+    const modelInput = buildModelInput(normalizedInput);
+    const requestedTargetDir = extractRequestedTargetDir(normalizedInput);
     const controller = new AbortController();
     const correlationId = getCorrelationId();
     const onSigint = () => controller.abort();
@@ -423,6 +480,7 @@ async function main() {
     let hasPrintedToolSection = false;
     let executedAnyTool = false;
     let languageRetryDone = false;
+    let consecutiveInvalidToolCalls = 0;
     const executedToolEvents: ExecutedToolEvent[] = [];
 
     spinner.start("Thinking...");
@@ -476,11 +534,12 @@ async function main() {
       }
 
       spinner.stop();
-      let assistantText = fullResponse;
+      let assistantText = stripToolMarkers(fullResponse);
       let fallbackRound = 0;
       const maxFallbackRounds = 5;
 
       while (true) {
+        assistantText = stripToolMarkers(assistantText);
         const textToolCalls = extractTextToolCalls(assistantText).filter(
           (call) => !isNoOpTextToolCall(call)
         );
@@ -496,7 +555,7 @@ async function main() {
           break;
         }
 
-        if (!isLikelyActionRequest(input)) {
+        if (!isLikelyActionRequest(normalizedInput)) {
           console.log(renderMarkdown(assistantText));
           printChatDivider();
           console.log();
@@ -512,8 +571,18 @@ async function main() {
         }
 
         let unknownToolDetected = false;
+        let abortFallbackLoop = false;
         for (const rawCall of textToolCalls) {
           const call = normalizeToolCallAlias(rawCall);
+          if (
+            call.name === "list_dir" &&
+            typeof call.arguments.path !== "string"
+          ) {
+            const hintPath = extractListDirPathHint(normalizedInput);
+            if (hintPath) {
+              call.arguments = { ...call.arguments, path: hintPath };
+            }
+          }
           if (isWriteOutsideRequestedTarget(call, requestedTargetDir)) {
             const target = requestedTargetDir || "(unknown)";
             const blockedPath =
@@ -555,6 +624,25 @@ async function main() {
           if (isUnknownToolResult(result)) {
             unknownToolDetected = true;
           }
+          if (isInvalidToolInputResult(result)) {
+            consecutiveInvalidToolCalls += 1;
+          } else {
+            consecutiveInvalidToolCalls = 0;
+          }
+          if (consecutiveInvalidToolCalls >= 3) {
+            messages.push({
+              role: "user",
+              content:
+                "System feedback: Stop calling tools with missing required arguments. Use valid schemas only (example: list_dir needs path when targeting a specific folder, bash needs command).",
+            });
+            console.log(
+              colors.dim(
+                "Stopped fallback early due to repeated invalid tool arguments."
+              )
+            );
+            abortFallbackLoop = true;
+            break;
+          }
         }
 
         if (unknownToolDetected) {
@@ -566,6 +654,9 @@ async function main() {
         }
 
         fallbackRound += 1;
+        if (abortFallbackLoop) {
+          break;
+        }
         if (fallbackRound >= maxFallbackRounds) {
           console.log(colors.dim("Stopped fallback after max rounds.\n"));
           break;
@@ -587,12 +678,12 @@ async function main() {
           break;
         }
 
-        assistantText = followUp;
+        assistantText = stripToolMarkers(followUp);
       }
 
       if (
         !languageRetryDone &&
-        isLikelyIndonesian(input) &&
+        isLikelyIndonesian(normalizedInput) &&
         looksLikeLanguageRefusalResponse(assistantText)
       ) {
         languageRetryDone = true;
@@ -624,7 +715,7 @@ async function main() {
         }
       }
 
-      if (isLikelyActionRequest(input) && !executedAnyTool && looksLikeToolAvoidanceResponse(assistantText)) {
+      if (isLikelyActionRequest(normalizedInput) && !executedAnyTool && looksLikeToolAvoidanceResponse(assistantText)) {
         messages.push({
           role: "user",
           content:
@@ -642,6 +733,7 @@ async function main() {
           retryResponse += token;
         }
         spinner.stop();
+        retryResponse = stripToolMarkers(retryResponse);
         const retryToolCalls = extractTextToolCalls(retryResponse);
         messages.push({
           role: "assistant",
@@ -683,8 +775,13 @@ async function main() {
         }
       }
 
-      if (isLikelyActionRequest(input) && executedToolEvents.length > 0) {
-        const gateFeedback = evaluateToolExecution(input, executedToolEvents);
+      if (
+        isLikelyActionRequest(normalizedInput) &&
+        shouldRunQualityGate(normalizedInput) &&
+        executedToolEvents.length > 0 &&
+        !wasLoopGuardTriggered(assistantText)
+      ) {
+        const gateFeedback = evaluateToolExecution(normalizedInput, executedToolEvents);
         if (gateFeedback) {
           messages.push({
             role: "user",
@@ -702,6 +799,7 @@ async function main() {
             gatedResponse += token;
           }
           spinner.stop();
+          gatedResponse = stripToolMarkers(gatedResponse);
 
           if (gatedResponse.trim()) {
             messages.push({

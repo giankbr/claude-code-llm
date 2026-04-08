@@ -164,6 +164,16 @@ export function printChatDivider(): void {
   console.log(colors.dim(divider));
 }
 
+export function printPromptFooter(): void {
+  const width = getTerminalWidth();
+  const left = "  ? for shortcuts";
+  const activeFile = path.basename(process.argv[1] || "index.ts");
+  const right = `⧉ In ${activeFile}  `;
+  const gap = Math.max(1, width - left.length - right.length);
+  console.log(colors.dim(`${left}${" ".repeat(gap)}${right}`));
+  console.log();
+}
+
 export function printToolCall(name: string, input: Record<string, unknown>) {
   const fullInput = JSON.stringify(input).replace(/"/g, "'");
   const tooltip = fullInput.length > 96 ? fullInput.substring(0, 93) + "…" : fullInput;

@@ -30,11 +30,18 @@ const COMMANDS: Command[] = [
 ];
 
 export function isCommand(input: string): boolean {
-  return input.trim().startsWith("/");
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) {
+    return false;
+  }
+  if (/^\/[A-Za-z0-9._-]+\/.+/.test(trimmed)) {
+    return false;
+  }
+  return true;
 }
 
 export function findCommand(input: string): Command | undefined {
-  const trimmed = input.trim().toLowerCase().substring(1); // Remove leading /
+  const trimmed = input.trim().toLowerCase().substring(1);
   const parts = trimmed.split(/\s+/);
   const name = parts[0] || "";
 
@@ -57,7 +64,6 @@ export async function handleCommand(
     };
   }
 
-  // Extract args after command name
   const inputLower = input.trim().toLowerCase();
   const parts = inputLower.split(/\s+/);
   const cmdName = parts[0] || "";

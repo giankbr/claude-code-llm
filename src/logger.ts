@@ -8,11 +8,11 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 };
 
 function getConfiguredLevel(): LogLevel {
-  const raw = (process.env.SENGIKU_LOG_LEVEL || "info").toLowerCase();
+  const raw = (process.env.SENGIKU_LOG_LEVEL || "warn").toLowerCase();
   if (raw === "debug" || raw === "info" || raw === "warn" || raw === "error") {
     return raw;
   }
-  return "info";
+  return "warn";
 }
 
 class Logger {
