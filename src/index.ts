@@ -24,6 +24,7 @@ import { analytics } from "./analytics";
 import type { PermissionMode } from "./tools/base";
 import { evaluateToolExecution, type ExecutedToolEvent } from "./quality-gate";
 import { normalizeToolCallAlias, type TextToolCall } from "./tools/alias-map";
+import { formatOpenAICompatConnectionError } from "./providers/openai-compat";
 
 const messages: GenericMessage[] = [];
 const SENGIKU_DIR = path.join(process.cwd(), ".sengiku");
@@ -370,7 +371,16 @@ function isExitPromptError(error: unknown): boolean {
 }
 
 function getReadableError(error: unknown): string {
+  const provider = process.env.PROVIDER || "anthropic";
   const message = error instanceof Error ? error.message : String(error);
+
+  if (provider === "openai-compat" || provider === "ollama") {
+    const baseURL =
+      provider === "ollama"
+        ? process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1"
+        : process.env.OPENAI_BASE_URL || "";
+    return formatOpenAICompatConnectionError(error, baseURL);
+  }
 
   if (message.includes("credit balance is too low")) {
     return "Anthropic API credit kamu tidak cukup. Top up dulu di Plans & Billing, lalu coba lagi.";
@@ -381,10 +391,6 @@ function getReadableError(error: unknown): string {
   }
 
   if (message.includes("connection refused")) {
-    const provider = process.env.PROVIDER || "anthropic";
-    if (provider === "ollama") {
-      return "Ollama server tidak jalan. Jalankan `ollama serve` di terminal lain.";
-    }
     return "Connection failed. Check OPENAI_BASE_URL atau server mu.";
   }
 

@@ -10,6 +10,65 @@ const MAX_SAME_TOOL_REPEAT = 3;
 const MAX_INVALID_TOOL_INPUTS = 3;
 const TOOL_COOLDOWN_THRESHOLD = 2;
 
+/** Default 90s — local inference can be slow; connection failures usually fail faster. */
+function resolveOpenAITimeoutMs(): number {
+  const raw = process.env.OPENAI_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return 90_000;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 3000) {
+    return 90_000;
+  }
+  return Math.min(n, 600_000);
+}
+
+/**
+ * Human-readable error when LM Studio / Ollama / OpenAI-compatible server is unreachable.
+ * Exported for CLI error formatting in index.ts.
+ */
+export function formatOpenAICompatConnectionError(
+  error: unknown,
+  baseURL?: string
+): string {
+  const e = error instanceof Error ? error : new Error(String(error));
+  const msg = e.message.toLowerCase();
+  const code = (error as NodeJS.ErrnoException)?.code;
+  const urlLine = baseURL ? `\nOPENAI_BASE_URL: ${baseURL}` : "";
+  const hints =
+    "Cek: (1) LM Studio / server API jalan, (2) model sudah di-load, (3) URL di .env berakhir /v1 (mis. http://127.0.0.1:1234/v1).";
+
+  if (e.name === "AbortError" || msg.includes("aborted") || msg.includes("user aborted")) {
+    return `Request dibatalkan (Ctrl+C) atau timeout.${urlLine}\n${hints}`;
+  }
+  if (
+    code === "ECONNREFUSED" ||
+    msg.includes("econnrefused") ||
+    msg.includes("connection refused")
+  ) {
+    return `Tidak bisa connect ke server LLM (connection refused).${urlLine}\n${hints}`;
+  }
+  if (
+    code === "ETIMEDOUT" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    msg.includes("timeout") ||
+    msg.includes("timed out") ||
+    msg.includes("connect timeout")
+  ) {
+    return `Timeout saat menghubungi server LLM.${urlLine}\n${hints}`;
+  }
+  if (code === "ENOTFOUND" || msg.includes("getaddrinfo") || msg.includes("enotfound")) {
+    return `Host tidak ditemukan (DNS / salah alamat).${urlLine}`;
+  }
+  if (msg.includes("fetch failed") || msg.includes("network error") || msg.includes("socket")) {
+    return `Gagal jaringan ke server LLM.${urlLine}\n${hints}`;
+  }
+  if (msg.includes("401") || msg.includes("403")) {
+    return `API menolak autentikasi (401/403). Cek OPENAI_API_KEY di .env.${urlLine}`;
+  }
+  return `Request gagal: ${e.message}${urlLine}`;
+}
+
 function parseToolArguments(rawArguments: string): Record<string, unknown> {
   const raw = rawArguments.trim();
   if (!raw) {
@@ -427,6 +486,12 @@ export class OpenAICompatProvider implements Provider {
   constructor() {
     const provider = process.env.PROVIDER || "anthropic";
 
+    const timeout = resolveOpenAITimeoutMs();
+    const clientOpts = {
+      timeout,
+      maxRetries: 0,
+    } as const;
+
     if (provider === "ollama") {
       const baseURL =
         process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
@@ -434,6 +499,7 @@ export class OpenAICompatProvider implements Provider {
       this.client = new OpenAI({
         apiKey: "ollama",
         baseURL,
+        ...clientOpts,
       });
     } else {
       const baseURL = process.env.OPENAI_BASE_URL;
@@ -450,6 +516,7 @@ export class OpenAICompatProvider implements Provider {
       this.client = new OpenAI({
         apiKey,
         baseURL,
+        ...clientOpts,
       });
     }
   }
@@ -584,51 +651,70 @@ export class OpenAICompatProvider implements Provider {
         input: Record<string, unknown>;
       }> = [];
 
-      const stream = (await this.client.chat.completions.create({
-        model: this.model,
-        messages: openaiMessages as ChatCompletionMessageParam[],
-        stream: true,
-        max_tokens: maxTokens,
-        tool_choice: "auto",
-        ...(openaiTools.length > 0 && { tools: openaiTools }),
-      } as any)) as unknown as AsyncIterable<any>;
+      const baseURLForErrors =
+        process.env.OPENAI_BASE_URL || process.env.OLLAMA_BASE_URL || "";
 
-      for await (const chunk of stream) {
-        if (options?.signal?.aborted) {
-          throw new Error("Cancelled by user");
-        }
-        if (!chunk.choices[0]) continue;
+      let stream: AsyncIterable<any>;
+      try {
+        stream = (await this.client.chat.completions.create({
+          model: this.model,
+          messages: openaiMessages as ChatCompletionMessageParam[],
+          stream: true,
+          max_tokens: maxTokens,
+          tool_choice: "auto",
+          ...(openaiTools.length > 0 && { tools: openaiTools }),
+          signal: options?.signal,
+        } as any)) as unknown as AsyncIterable<any>;
+      } catch (err) {
+        yield `\n${formatOpenAICompatConnectionError(err, baseURLForErrors)}\n`;
+        return;
+      }
 
-        const delta = chunk.choices[0].delta;
+      try {
+        for await (const chunk of stream) {
+          if (options?.signal?.aborted) {
+            throw new Error("Cancelled by user");
+          }
+          if (!chunk.choices[0]) continue;
 
-        if (delta.content) {
-          fullResponse += delta.content;
-          yield delta.content;
-        }
+          const delta = chunk.choices[0].delta;
 
-        if (delta.tool_calls) {
-          for (const toolCall of delta.tool_calls) {
-            const toolCallId =
-              toolCall.id || `tool_${toolCall.index ?? 0}_${toolCalls.length}`;
-            let toolCallEntry = toolCalls.find((tc) => tc.id === toolCallId);
-            if (!toolCallEntry) {
-              toolCallEntry = {
-                id: toolCallId,
-                name: toolCall.function?.name || "",
-                rawArguments: "",
-                input: {},
-              };
-              toolCalls.push(toolCallEntry);
-            }
+          if (delta.content) {
+            fullResponse += delta.content;
+            yield delta.content;
+          }
 
-            if (toolCall.function?.name) {
-              toolCallEntry.name = toolCall.function.name;
-            }
-            if (toolCall.function?.arguments) {
-              toolCallEntry.rawArguments += toolCall.function.arguments;
+          if (delta.tool_calls) {
+            for (const toolCall of delta.tool_calls) {
+              const toolCallId =
+                toolCall.id || `tool_${toolCall.index ?? 0}_${toolCalls.length}`;
+              let toolCallEntry = toolCalls.find((tc) => tc.id === toolCallId);
+              if (!toolCallEntry) {
+                toolCallEntry = {
+                  id: toolCallId,
+                  name: toolCall.function?.name || "",
+                  rawArguments: "",
+                  input: {},
+                };
+                toolCalls.push(toolCallEntry);
+              }
+
+              if (toolCall.function?.name) {
+                toolCallEntry.name = toolCall.function.name;
+              }
+              if (toolCall.function?.arguments) {
+                toolCallEntry.rawArguments += toolCall.function.arguments;
+              }
             }
           }
         }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("Cancelled by user")) {
+          throw err;
+        }
+        yield `\n${formatOpenAICompatConnectionError(err, baseURLForErrors)}\n`;
+        return;
       }
 
       for (const toolCall of toolCalls) {
