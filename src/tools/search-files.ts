@@ -1,0 +1,106 @@
+import path from "node:path";
+import { promises as fs } from "node:fs";
+import type { Tool, ToolContext, PermissionDecision } from "./base";
+
+const WORKSPACE_ROOT = process.cwd();
+
+function resolveInWorkspace(inputPath: string): string | null {
+  const resolved = path.resolve(WORKSPACE_ROOT, inputPath);
+  const relative = path.relative(WORKSPACE_ROOT, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  return resolved;
+}
+
+async function findFilesRecursive(
+  dir: string,
+  pattern: RegExp,
+  maxFiles: number = 50
+): Promise<string[]> {
+  const results: string[] = [];
+
+  async function search(currentDir: string): Promise<void> {
+    if (results.length >= maxFiles) return;
+
+    try {
+      const entries = await fs.readdir(currentDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (results.length >= maxFiles) return;
+
+        const fullPath = path.join(currentDir, entry.name);
+        const relative = path.relative(WORKSPACE_ROOT, fullPath);
+
+        if (entry.isDirectory()) {
+          if (!entry.name.startsWith(".") && !entry.name.includes("node_modules")) {
+            await search(fullPath);
+          }
+        } else if (pattern.test(entry.name)) {
+          results.push(relative);
+        }
+      }
+    } catch {
+      // skip inaccessible directories
+    }
+  }
+
+  await search(dir);
+  return results;
+}
+
+export const searchFilesTool: Tool = {
+  name: "search_files",
+  description:
+    "Search for files by name pattern (regex) in the workspace",
+  input_schema: {
+    type: "object",
+    properties: {
+      pattern: {
+        type: "string",
+        description: "Regex pattern to match file names (e.g., '.*\\.ts$')",
+      },
+      start_path: {
+        type: "string",
+        description: "Directory to start search from (defaults to root)",
+      },
+    },
+    required: ["pattern"],
+  },
+  isReadOnly(): boolean {
+    return true;
+  },
+  isDestructive(): boolean {
+    return false;
+  },
+  async checkPermissions(
+    input: Record<string, unknown>
+  ): Promise<PermissionDecision> {
+    const pattern = input.pattern as string;
+    if (!pattern?.trim()) {
+      return { allowed: false, reason: "Missing pattern argument" };
+    }
+    return { allowed: true };
+  },
+  async execute(input: Record<string, unknown>): Promise<string> {
+    const pattern = input.pattern as string;
+    const startPath = (input.start_path as string) || ".";
+
+    const safePath = resolveInWorkspace(startPath);
+    if (!safePath) {
+      return "Error: start_path outside workspace";
+    }
+
+    try {
+      const regex = new RegExp(pattern);
+      const results = await findFilesRecursive(safePath, regex);
+
+      if (results.length === 0) {
+        return `No files matching pattern: ${pattern}`;
+      }
+
+      return results.join("\n");
+    } catch (e) {
+      return `Error searching files: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  },
+};

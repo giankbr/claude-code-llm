@@ -1,21 +1,32 @@
 import inquirer from "inquirer";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type { GenericMessage } from "./providers/base";
 import { streamResponse } from "./client";
 import {
   colors,
   spinner,
   printHeader,
+  printToolSectionHeader,
   printToolCall,
   printToolResult,
   renderMarkdown,
   promptSymbol,
 } from "./ui";
-import { isCommand, handleCommand } from "./commands";
-import { executeTool } from "./tools";
+import { isCommand, handleCommand } from "./commands/registry";
+import { executeTool } from "./tools/registry";
 
 const messages: GenericMessage[] = [];
+const SENGIKU_DIR = path.join(process.cwd(), ".sengiku");
+const SENGIKU_RULES_FILE = path.join(SENGIKU_DIR, "rules.md");
+const SENGIKU_MEMORY_FILE = path.join(SENGIKU_DIR, "memory.json");
 
 type TextToolCall = { name: string; arguments: Record<string, unknown> };
+type LearningMemory = {
+  projectGoal: string;
+  codingStyle: string[];
+  preferredCommands: string[];
+};
 
 function parseLooseJsonObject(input: string): Record<string, unknown> | null {
   const trimmed = input.trim();
@@ -88,6 +99,90 @@ function extractTextToolCalls(text: string): TextToolCall[] {
   return calls;
 }
 
+function ensureLearningFiles(): void {
+  if (!existsSync(SENGIKU_DIR)) {
+    mkdirSync(SENGIKU_DIR, { recursive: true });
+  }
+
+  if (!existsSync(SENGIKU_RULES_FILE)) {
+    writeFileSync(
+      SENGIKU_RULES_FILE,
+      [
+        "# Sengiku Project Rules",
+        "",
+        "- Prioritize tool execution for file/command requests.",
+        "- Keep changes minimal, readable, and testable.",
+        "- Prefer workspace-local paths and safe commands.",
+        "",
+      ].join("\n")
+    );
+  }
+
+  if (!existsSync(SENGIKU_MEMORY_FILE)) {
+    const initialMemory: LearningMemory = {
+      projectGoal: "Build a reliable local coding CLI agent.",
+      codingStyle: ["TypeScript strict", "small functions", "clear error messages"],
+      preferredCommands: ["bun run typecheck", "bun run index.ts"],
+    };
+    writeFileSync(SENGIKU_MEMORY_FILE, JSON.stringify(initialMemory, null, 2));
+  }
+}
+
+function getLearningContext(): string {
+  const parts: string[] = [];
+  try {
+    if (existsSync(SENGIKU_RULES_FILE)) {
+      const rules = readFileSync(SENGIKU_RULES_FILE, "utf8").trim();
+      if (rules) {
+        parts.push(`Project rules:\n${rules}`);
+      }
+    }
+
+    if (existsSync(SENGIKU_MEMORY_FILE)) {
+      const raw = readFileSync(SENGIKU_MEMORY_FILE, "utf8");
+      const memory = JSON.parse(raw) as LearningMemory;
+      parts.push(
+        [
+          "Project memory:",
+          `- Goal: ${memory.projectGoal}`,
+          `- Coding style: ${(memory.codingStyle || []).join(", ")}`,
+          `- Preferred commands: ${(memory.preferredCommands || []).join(", ")}`,
+        ].join("\n")
+      );
+    }
+  } catch {
+    return "";
+  }
+
+  return parts.join("\n\n").trim();
+}
+
+function buildModelInput(userInput: string): string {
+  const ctx = getLearningContext();
+  if (!ctx) {
+    return userInput;
+  }
+
+  return [
+    "Use this project context before answering:",
+    ctx,
+    "",
+    `User request: ${userInput}`,
+  ].join("\n");
+}
+
+function isLikelyActionRequest(input: string): boolean {
+  return /buat|create|edit|ubah|write|run|jalankan|install|folder|file|command|bash|commit|push/i.test(
+    input
+  );
+}
+
+function looksLikeToolAvoidanceResponse(text: string): boolean {
+  return /tidak memiliki akses|cannot access|can't access|cannot directly|salin dan tempel|copy and paste/i.test(
+    text
+  );
+}
+
 function isExitPromptError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -131,6 +226,7 @@ function getContext() {
 }
 
 async function main() {
+  ensureLearningFiles();
   const context = getContext();
   printHeader(context);
 
@@ -170,15 +266,18 @@ async function main() {
     }
 
 
+    const modelInput = buildModelInput(input);
     messages.push({
       role: "user",
-      content: input,
+      content: modelInput,
     });
 
 
     let fullResponse = "";
     let currentToolCall: { name: string; input: Record<string, unknown> } | null = null;
     const toolStartTime = Date.now();
+    let hasPrintedToolSection = false;
+    let executedAnyTool = false;
 
     spinner.start("Thinking...");
 
@@ -192,6 +291,10 @@ async function main() {
             const name = match[1] || "";
             const inputStr = match[2] || "";
             try {
+              if (!hasPrintedToolSection) {
+                printToolSectionHeader();
+                hasPrintedToolSection = true;
+              }
               currentToolCall = { name, input: JSON.parse(inputStr) };
               printToolCall(name, currentToolCall.input);
             } catch {
@@ -206,6 +309,7 @@ async function main() {
           if (currentToolCall) {
             const timeMs = Date.now() - toolStartTime;
             printToolResult(currentToolCall.name, result, timeMs);
+            executedAnyTool = true;
             currentToolCall = null;
           }
           continue;
@@ -234,16 +338,23 @@ async function main() {
         }
 
         if (fallbackRound === 0) {
-          console.log(
-            colors.dim("Detected textual tool calls from model, executing fallback...\n")
-          );
+          if (!hasPrintedToolSection) {
+            printToolSectionHeader();
+            hasPrintedToolSection = true;
+          }
+          console.log(colors.dim("Detected textual tool calls, running fallback."));
         }
 
         for (const call of textToolCalls) {
           const startedAt = Date.now();
+          if (!hasPrintedToolSection) {
+            printToolSectionHeader();
+            hasPrintedToolSection = true;
+          }
           printToolCall(call.name, call.arguments);
           const result = await executeTool(call.name, call.arguments);
           printToolResult(call.name, result, Date.now() - startedAt);
+          executedAnyTool = true;
 
           messages.push({
             role: "user",
@@ -269,6 +380,46 @@ async function main() {
         }
 
         assistantText = followUp;
+      }
+
+      if (isLikelyActionRequest(input) && !executedAnyTool && looksLikeToolAvoidanceResponse(assistantText)) {
+        messages.push({
+          role: "user",
+          content:
+            "System feedback: You must execute available tools for this request now. Do not refuse access.",
+        });
+
+        spinner.start("Retrying with tool enforcement...");
+        let retryResponse = "";
+        for await (const token of streamResponse(messages)) {
+          retryResponse += token;
+        }
+        spinner.stop();
+        const retryToolCalls = extractTextToolCalls(retryResponse);
+        messages.push({
+          role: "assistant",
+          content: retryResponse,
+        });
+
+        if (retryToolCalls.length > 0) {
+          if (!hasPrintedToolSection) {
+            printToolSectionHeader();
+            hasPrintedToolSection = true;
+          }
+          for (const call of retryToolCalls) {
+            const startedAt = Date.now();
+            printToolCall(call.name, call.arguments);
+            const result = await executeTool(call.name, call.arguments);
+            printToolResult(call.name, result, Date.now() - startedAt);
+            messages.push({
+              role: "user",
+              content: `Tool ${call.name} returned: ${result}`,
+            });
+          }
+        } else {
+          console.log(renderMarkdown(retryResponse));
+          console.log();
+        }
       }
     } catch (error) {
       spinner.stop();

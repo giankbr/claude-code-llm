@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, Tool } from "@anthropic-ai/sdk/resources/messages";
 import type { Provider, GenericMessage, GenericTool } from "./base";
-import { TOOLS, executeTool } from "../tools";
+import { TOOLS, executeTool } from "../tools/registry";
 import { getSystemPrompt } from "../prompts";
 
 const client = new Anthropic({
@@ -85,7 +85,10 @@ export class AnthropicProvider implements Provider {
       for (const toolCall of toolCalls) {
         yield `[TOOL:${toolCall.name}:${JSON.stringify(toolCall.input)}]`;
 
-        const result = await executeTool(toolCall.name, toolCall.input);
+        const result = await executeTool(toolCall.name, toolCall.input, {
+          workspaceRoot: process.cwd(),
+          permissionMode: "default",
+        });
         yield `[RESULT:${result}]`;
 
         // Append tool result as a user message with both text and tool_result

@@ -1,0 +1,59 @@
+import type { Command, CommandResult } from "./base";
+import type { GenericMessage } from "../providers/base";
+import { clearCommand } from "./clear";
+import { helpCommand } from "./help";
+import { exitCommand } from "./exit";
+import { doctorCommand } from "./doctor";
+import { memoryCommand } from "./memory";
+import { toolsCommand } from "./tools";
+import { colors } from "../ui";
+
+const COMMANDS: Command[] = [
+  clearCommand,
+  helpCommand,
+  exitCommand,
+  doctorCommand,
+  memoryCommand,
+  toolsCommand,
+];
+
+export function isCommand(input: string): boolean {
+  return input.trim().startsWith("/");
+}
+
+export function findCommand(input: string): Command | undefined {
+  const trimmed = input.trim().toLowerCase().substring(1); // Remove leading /
+  const parts = trimmed.split(/\s+/);
+  const name = parts[0] || "";
+
+  return COMMANDS.find(
+    (cmd) => cmd.name === name || (cmd.aliases?.includes(name) ?? false)
+  );
+}
+
+export async function handleCommand(
+  input: string,
+  messages: GenericMessage[]
+): Promise<CommandResult> {
+  const command = findCommand(input);
+
+  if (!command) {
+    const trimmed = input.trim().toLowerCase();
+    return {
+      type: "unknown",
+      message: colors.error(`Unknown command: ${trimmed}`),
+    };
+  }
+
+  // Extract args after command name
+  const inputLower = input.trim().toLowerCase();
+  const parts = inputLower.split(/\s+/);
+  const cmdName = parts[0] || "";
+  const args = input.substring(cmdName.length + 1).trim();
+
+  return await command.handler(args, messages);
+}
+
+export function getCommandList(): Command[] {
+  return COMMANDS;
+}

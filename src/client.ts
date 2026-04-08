@@ -1,7 +1,7 @@
 import type { GenericMessage, GenericTool, Provider } from "./providers/base";
 import { AnthropicProvider } from "./providers/anthropic";
 import { OpenAICompatProvider } from "./providers/openai-compat";
-import { TOOLS } from "./tools";
+import { TOOLS } from "./tools/registry";
 
 let provider: Provider;
 

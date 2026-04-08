@@ -2,6 +2,7 @@ import pc from "picocolors";
 import ora from "ora";
 import highlight from "cli-highlight";
 import os from "os";
+import inquirer from "inquirer";
 
 export { pc };
 
@@ -34,9 +35,7 @@ function truncatePath(filePath: string, maxLen: number = 30): string {
 
 export function printHeader(context?: { provider: string; model: string; cwd?: string }) {
   const width = getTerminalWidth();
-  const innerWidth = width - 2;
-  const title = "Sengiku Code";
-  let contextStr = title;
+  let contextStr = "Sengiku Code";
   if (context) {
     contextStr += " · " + context.model;
     if (context.provider !== "anthropic") {
@@ -47,22 +46,15 @@ export function printHeader(context?: { provider: string; model: string; cwd?: s
     }
   }
 
-  if (contextStr.length > innerWidth - 4) {
-    contextStr = contextStr.substring(0, innerWidth - 7) + "…";
+  if (contextStr.length > width - 2) {
+    contextStr = contextStr.substring(0, width - 5) + "…";
   }
 
-  const topBorder = "╭" + "─".repeat(innerWidth) + "╮";
-  const titlePad = Math.max(0, innerWidth - contextStr.length);
-  const titleLine = "│" + contextStr + " ".repeat(titlePad) + "│";
   const hint = "Type /help for commands, /exit to quit";
-  const hintPad = Math.max(0, innerWidth - hint.length);
-  const hintLine = "│" + colors.dim(hint) + " ".repeat(hintPad) + "│";
-  const bottomBorder = "╰" + "─".repeat(innerWidth) + "╯";
-
-  console.log(colors.dim(topBorder));
-  console.log(colors.dim(titleLine));
-  console.log(colors.dim(hintLine));
-  console.log(colors.dim(bottomBorder));
+  const divider = "─".repeat(Math.max(30, Math.min(width, 80)));
+  console.log(colors.dim(contextStr));
+  console.log(colors.dim(hint));
+  console.log(colors.dim(divider));
   console.log();
 }
 
@@ -76,11 +68,15 @@ export function promptSymbol(): string {
   return colors.user("❯ ");
 }
 
+export function printToolSectionHeader(): void {
+  console.log(colors.dim("Tool Calls"));
+}
+
 export function printToolCall(name: string, input: Record<string, unknown>) {
   const fullInput = JSON.stringify(input).replace(/"/g, "'");
-  const tooltip = fullInput.length > 110 ? fullInput.substring(0, 107) + "…" : fullInput;
-  console.log(colors.tool("⏺") + " " + colors.tool(name) + pc.dim(`(${tooltip})`));
-  console.log(colors.dim("  └─ Running..."));
+  const tooltip = fullInput.length > 96 ? fullInput.substring(0, 93) + "…" : fullInput;
+  console.log(colors.tool("• ") + colors.tool(name) + pc.dim(`(${tooltip})`));
+  console.log(colors.dim("  ↳ running..."));
 }
 
 export function printToolResult(name: string, result: string, timeMs?: number) {
@@ -196,4 +192,20 @@ export function renderMarkdown(text: string): string {
   }
 
   return output.trimEnd();
+}
+
+export async function confirmTool(
+  name: string,
+  input: Record<string, unknown>
+): Promise<boolean> {
+  const inputStr = JSON.stringify(input).substring(0, 80);
+  const { confirmed } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "confirmed",
+      message: `Allow tool "${name}"? (input: ${inputStr}${inputStr.length > 80 ? "..." : ""})`,
+      default: false,
+    },
+  ]);
+  return confirmed;
 }
