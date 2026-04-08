@@ -175,6 +175,93 @@ function repairToolArgs(
   return { repaired, wasRepaired: anyFilled };
 }
 
+async function repairArgsWithModelCall(
+  client: OpenAI,
+  model: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  required: string[],
+  userRequest: string
+): Promise<{ repaired: Record<string, unknown>; wasRepaired: boolean }> {
+  const missing = required.filter(
+    (f) => !(f in args) || args[f] === undefined || args[f] === null || args[f] === ""
+  );
+  if (missing.length === 0) return { repaired: args, wasRepaired: false };
+
+  let repairPrompt = "";
+  if (toolName === "write_file" || toolName === "edit_file") {
+    const needPath = missing.includes("path");
+    const needContent = missing.includes("content");
+    if (needPath && needContent) {
+      repairPrompt =
+        `The user requested: "${userRequest}"\n\n` +
+        `You must create a file. Reply ONLY in this exact format, nothing else:\n` +
+        `PATH: <filename>\nCONTENT:\n<complete file content>`;
+    } else if (needContent) {
+      repairPrompt =
+        `The user requested: "${userRequest}"\n` +
+        `File path: ${args.path}\n\n` +
+        `Provide ONLY the complete file content with no explanation:`;
+    } else if (needPath) {
+      repairPrompt =
+        `The user requested: "${userRequest}"\n\n` +
+        `What filename should be used? Reply with ONLY the filename (e.g. index.html):`;
+    }
+  } else if (toolName === "bash") {
+    repairPrompt =
+      `The user requested: "${userRequest}"\n\n` +
+      `Provide ONLY the single bash command to execute, no explanation:`;
+  }
+
+  if (!repairPrompt) return { repaired: args, wasRepaired: false };
+
+  try {
+    const response = await (client.chat.completions.create as Function)({
+      model,
+      messages: [{ role: "user", content: repairPrompt }],
+      max_tokens: 2048,
+      stream: false,
+    });
+
+    const text: string = response?.choices?.[0]?.message?.content?.trim() ?? "";
+    if (!text) return { repaired: args, wasRepaired: false };
+
+    const repaired = { ...args };
+    let wasRepaired = false;
+
+    if (toolName === "write_file" || toolName === "edit_file") {
+      if (missing.includes("path") && missing.includes("content")) {
+        const pathMatch = text.match(/^PATH:\s*(.+)$/im);
+        const contentMatch = text.match(/^CONTENT:\s*\n([\s\S]+)$/im);
+        if (pathMatch?.[1]) {
+          repaired.path = pathMatch[1].trim();
+          wasRepaired = true;
+        }
+        if (contentMatch?.[1]) {
+          repaired.content = contentMatch[1].trim();
+          wasRepaired = true;
+        }
+      } else if (missing.includes("content")) {
+        repaired.content = text;
+        wasRepaired = true;
+      } else if (missing.includes("path")) {
+        repaired.path = text.split("\n")[0]?.trim() ?? text;
+        wasRepaired = true;
+      }
+    } else if (toolName === "bash") {
+      const cmd = text.replace(/^```[a-z]*\n?/i, "").replace(/```\s*$/i, "").trim();
+      if (cmd) {
+        repaired.command = cmd.split("\n")[0]?.trim() ?? cmd;
+        wasRepaired = true;
+      }
+    }
+
+    return { repaired, wasRepaired };
+  } catch {
+    return { repaired: args, wasRepaired: false };
+  }
+}
+
 export class OpenAICompatProvider implements Provider {
   private client: OpenAI;
   private model: string;
@@ -379,17 +466,34 @@ export class OpenAICompatProvider implements Provider {
           normalized.arguments = { ...normalized.arguments, path: listDirPathHint };
         }
 
-        // Attempt text-extraction repair when required fields are missing
+        // Stage 1: text-extraction repair (fast, no API call)
         const requiredFields = getRequiredFields(normalized.name, tools);
-        const { repaired, wasRepaired } = repairToolArgs(
+        const textRepair = repairToolArgs(
           normalized.name,
           normalized.arguments,
           requiredFields,
           fullResponse
         );
-        if (wasRepaired) {
-          normalized.arguments = repaired;
+        let finalArgs = textRepair.wasRepaired ? textRepair.repaired : normalized.arguments;
+
+        // Stage 2: targeted model call when fields are still missing
+        const stillMissing = requiredFields.filter(
+          (f) => !(f in finalArgs) || finalArgs[f] === undefined || finalArgs[f] === null || finalArgs[f] === ""
+        );
+        if (stillMissing.length > 0) {
+          const modelRepair = await repairArgsWithModelCall(
+            this.client,
+            this.model,
+            normalized.name,
+            finalArgs,
+            requiredFields,
+            lastUserPrompt
+          );
+          if (modelRepair.wasRepaired) {
+            finalArgs = modelRepair.repaired;
+          }
         }
+        normalized.arguments = finalArgs;
 
         const fingerprint = `${normalized.name}:${JSON.stringify(normalized.arguments)}`;
         if (fingerprint === previousToolFingerprint) {
