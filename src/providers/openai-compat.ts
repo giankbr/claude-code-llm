@@ -216,10 +216,24 @@ async function repairArgsWithModelCall(
   lastWrittenPath?: string,
   lastMentionedFilePath?: string
 ): Promise<{ repaired: Record<string, unknown>; wasRepaired: boolean }> {
-  const missing = required.filter(
+  let missing = required.filter(
     (f) => !(f in args) || args[f] === undefined || args[f] === null || args[f] === ""
   );
   if (missing.length === 0) return { repaired: args, wasRepaired: false };
+
+  // Universal path resolution for any file tool — runs FIRST
+  const FILE_TOOLS = ["read_file", "write_file", "edit_file", "list_dir"];
+  if (missing.includes("path") && FILE_TOOLS.includes(toolName)) {
+    const pathHint =
+      lastWrittenPath ||
+      userRequest.match(FILE_EXT_RE)?.[1] ||
+      lastMentionedFilePath;
+    if (pathHint) {
+      args = { ...args, path: normalizeFilePath(pathHint) };
+      missing = missing.filter((f) => f !== "path");
+      if (missing.length === 0) return { repaired: args, wasRepaired: true };
+    }
+  }
 
   let repairPrompt = "";
 
@@ -267,21 +281,8 @@ async function repairArgsWithModelCall(
     }
   }
 
-  if (toolName === "read_file" || toolName === "list_dir") {
-    // Priority 1: file written this turn
-    if (lastWrittenPath) {
-      return { repaired: { ...args, path: lastWrittenPath }, wasRepaired: true };
-    }
-    // Priority 2: any filename in the current user prompt
-    const promptHint = userRequest.match(FILE_EXT_RE);
-    if (promptHint?.[1]) {
-      return { repaired: { ...args, path: normalizeFilePath(promptHint[1]) }, wasRepaired: true };
-    }
-    // Priority 3: any filename mentioned anywhere in conversation history
-    if (lastMentionedFilePath) {
-      return { repaired: { ...args, path: lastMentionedFilePath }, wasRepaired: true };
-    }
-    // Priority 4: ask the model
+  // read_file / list_dir — path already resolved above; if still missing, ask model
+  if ((toolName === "read_file" || toolName === "list_dir") && missing.includes("path")) {
     repairPrompt =
       `The user requested: "${userRequest}"\n\n` +
       `Which file path should be read? Reply with ONLY the file path (e.g. index.html or src/app.ts):`;
