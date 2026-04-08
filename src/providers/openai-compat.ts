@@ -112,12 +112,10 @@ function extractArgsFromText(
   const result: ExtractedToolArgs = {};
 
   if (toolName === "write_file" || toolName === "edit_file") {
-    // Match filenames like index.html, src/app.ts, api/routes.js
     const fileMatch = assistantText.match(
       /(?:create|write|buat|file[:\s]+|path[:\s]+|→\s*)([A-Za-z0-9._/\\-]+\.[A-Za-z]{1,6})\b/i
     );
     if (!fileMatch) {
-      // Fallback: any bare filename mentioned in text
       const bareFile = assistantText.match(
         /\b([A-Za-z0-9_-]+\.(?:html|css|js|ts|json|md|txt|jsx|tsx|py|sh))\b/i
       );
@@ -125,11 +123,17 @@ function extractArgsFromText(
     } else {
       result.path = fileMatch[1];
     }
-    // Extract fenced code block content
     const codeBlock = assistantText.match(/```[a-z]*\n?([\s\S]+?)```/i);
     if (codeBlock && codeBlock[1]) {
       result.content = codeBlock[1].trim();
     }
+  }
+
+  if (toolName === "read_file" || toolName === "list_dir") {
+    const fileMatch = assistantText.match(
+      /\b([A-Za-z0-9._/\\-]+\.(?:html|css|js|ts|json|md|txt|jsx|tsx|py|sh|yaml|yml|env))\b/i
+    );
+    if (fileMatch) result.path = fileMatch[1];
   }
 
   if (toolName === "bash") {
@@ -181,7 +185,8 @@ async function repairArgsWithModelCall(
   toolName: string,
   args: Record<string, unknown>,
   required: string[],
-  userRequest: string
+  userRequest: string,
+  lastWrittenPath?: string
 ): Promise<{ repaired: Record<string, unknown>; wasRepaired: boolean }> {
   const missing = required.filter(
     (f) => !(f in args) || args[f] === undefined || args[f] === null || args[f] === ""
@@ -189,6 +194,18 @@ async function repairArgsWithModelCall(
   if (missing.length === 0) return { repaired: args, wasRepaired: false };
 
   let repairPrompt = "";
+
+  // read_file: almost always reading the last file that was written
+  if (toolName === "read_file" || toolName === "list_dir") {
+    if (lastWrittenPath) {
+      return { repaired: { ...args, path: lastWrittenPath }, wasRepaired: true };
+    }
+    // Ask model which file to read
+    repairPrompt =
+      `The user requested: "${userRequest}"\n\n` +
+      `Which file path should be read? Reply with ONLY the file path (e.g. index.html or src/app.ts):`;
+  }
+
   if (toolName === "write_file" || toolName === "edit_file") {
     const needPath = missing.includes("path");
     const needContent = missing.includes("content");
@@ -246,6 +263,12 @@ async function repairArgsWithModelCall(
         wasRepaired = true;
       } else if (missing.includes("path")) {
         repaired.path = text.split("\n")[0]?.trim() ?? text;
+        wasRepaired = true;
+      }
+    } else if (toolName === "read_file" || toolName === "list_dir") {
+      const filePath = text.split("\n")[0]?.trim() ?? text;
+      if (filePath) {
+        repaired.path = filePath;
         wasRepaired = true;
       }
     } else if (toolName === "bash") {
@@ -351,6 +374,7 @@ export class OpenAICompatProvider implements Provider {
     let invalidToolInputCount = 0;
     const invalidByTool = new Map<string, number>();
     const cooledDownTools = new Set<string>();
+    let lastWrittenPath: string | undefined;
     while (true) {
       if (depth > MAX_TOOL_DEPTH) {
         yield "\nTool loop depth limit reached.\n";
@@ -487,7 +511,8 @@ export class OpenAICompatProvider implements Provider {
             normalized.name,
             finalArgs,
             requiredFields,
-            lastUserPrompt
+            lastUserPrompt,
+            lastWrittenPath
           );
           if (modelRepair.wasRepaired) {
             finalArgs = modelRepair.repaired;
@@ -520,6 +545,16 @@ export class OpenAICompatProvider implements Provider {
           correlationId: options?.correlationId,
           signal: options?.signal,
         });
+
+        // Track the last successfully written file for read_file repair
+        if (
+          (normalized.name === "write_file" || normalized.name === "edit_file") &&
+          typeof normalized.arguments.path === "string" &&
+          !result.toLowerCase().includes("failed")
+        ) {
+          lastWrittenPath = normalized.arguments.path as string;
+        }
+
         yield `[RESULT:${result}]`;
 
         if (/Invalid .* input: Missing required field:/i.test(result)) {
