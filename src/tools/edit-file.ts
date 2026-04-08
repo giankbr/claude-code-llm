@@ -14,7 +14,15 @@ function resolveInWorkspace(inputPath: string): string | null {
 
 export const editFileTool: Tool = {
   name: "edit_file",
-  description: "Find and replace text in a file (simple string replacement)",
+  description: `Performs exact string replacements in files.
+
+Usage:
+- Always read the file with read_file at least once before editing.
+- Preserve exact indentation (tabs/spaces) from the original file.
+- ALWAYS prefer editing existing files over creating new ones.
+- The edit will FAIL if old_string is not unique in the file. Provide more surrounding context to make it unique.
+- Use replace_all for renaming strings across the whole file.
+- Only add emojis if the user explicitly requests it.`,
   input_schema: {
     type: "object",
     properties: {

@@ -15,7 +15,13 @@ function resolveInWorkspace(inputPath: string): string | null {
 
 export const listDirTool: Tool = {
   name: "list_dir",
-  description: "List files and directories in a folder",
+  description: `Lists files and directories in a given folder.
+
+Usage:
+- Use this instead of bash ls or find commands.
+- Use to verify a target directory exists before creating files inside it.
+- Defaults to current workspace root if no path provided.
+- Only lists paths within the workspace (path traversal blocked).`,
   input_schema: {
     type: "object",
     properties: {

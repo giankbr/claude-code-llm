@@ -14,7 +14,13 @@ function resolveInWorkspace(inputPath: string): string | null {
 
 export const readFileTool: Tool = {
   name: "read_file",
-  description: "Read the contents of a file",
+  description: `Reads the full contents of a file from the workspace.
+
+Usage:
+- Use this instead of bash cat/head/tail commands.
+- Must be called at least once before editing a file with edit_file.
+- Returns raw file contents with line numbers for reference.
+- Only reads files within the workspace root (path traversal blocked).`,
   input_schema: {
     type: "object",
     properties: {

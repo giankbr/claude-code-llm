@@ -50,8 +50,14 @@ async function findFilesRecursive(
 
 export const searchFilesTool: Tool = {
   name: "search_files",
-  description:
-    "Search for files by name pattern (regex) in the workspace",
+  description: `Searches for files by name pattern (regex) in the workspace.
+
+Usage:
+- Use this instead of bash find or ls commands for file discovery.
+- Pattern is a regex matched against file names (e.g. '.*\\.ts$').
+- Use start_path to narrow scope to a subdirectory.
+- Skips hidden directories and node_modules automatically.
+- Returns up to 50 matching relative paths.`,
   input_schema: {
     type: "object",
     properties: {

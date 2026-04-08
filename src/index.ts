@@ -243,6 +243,40 @@ function isLikelyActionRequest(input: string): boolean {
   );
 }
 
+function extractRequestedTargetDir(input: string): string | null {
+  const absolutePathMatch = input.match(/(\/[^\s]+)/);
+  if (absolutePathMatch && absolutePathMatch[1]) {
+    return absolutePathMatch[1].replace(/[.,]$/, "");
+  }
+
+  const newFolderMatch = input.match(/folder baru(?: bernama)?\s+([A-Za-z0-9._-]+)/i);
+  if (newFolderMatch && newFolderMatch[1]) {
+    return path.join(process.cwd(), newFolderMatch[1]);
+  }
+
+  return null;
+}
+
+function isWriteOutsideRequestedTarget(
+  call: TextToolCall,
+  requestedTargetDir: string | null
+): boolean {
+  if (!requestedTargetDir) {
+    return false;
+  }
+  if (call.name !== "write_file" && call.name !== "edit_file") {
+    return false;
+  }
+  const rawPath = typeof call.arguments.path === "string" ? call.arguments.path : "";
+  if (!rawPath) {
+    return false;
+  }
+  const resolvedTarget = path.resolve(requestedTargetDir);
+  const resolvedWritePath = path.resolve(process.cwd(), rawPath);
+  const relative = path.relative(resolvedTarget, resolvedWritePath);
+  return relative.startsWith("..") || path.isAbsolute(relative);
+}
+
 function looksLikeToolAvoidanceResponse(text: string): boolean {
   return /tidak memiliki akses|cannot access|can't access|cannot directly|salin dan tempel|copy and paste/i.test(
     text
@@ -341,6 +375,7 @@ async function main() {
 
 
     const modelInput = buildModelInput(input);
+    const requestedTargetDir = extractRequestedTargetDir(input);
     const controller = new AbortController();
     const onSigint = () => controller.abort();
     process.once("SIGINT", onSigint);
@@ -443,6 +478,18 @@ async function main() {
         }
 
         for (const call of textToolCalls) {
+          if (isWriteOutsideRequestedTarget(call, requestedTargetDir)) {
+            const target = requestedTargetDir || "(unknown)";
+            const blockedPath =
+              typeof call.arguments.path === "string" ? call.arguments.path : "(unknown)";
+            const blockMessage = `Blocked ${call.name} outside requested target (${target}): ${blockedPath}`;
+            printToolResult(call.name, blockMessage, 0);
+            messages.push({
+              role: "user",
+              content: `System guard: ${blockMessage}. Use only files inside requested target.`,
+            });
+            continue;
+          }
           const startedAt = Date.now();
           if (!hasPrintedToolSection) {
             printToolSectionHeader();

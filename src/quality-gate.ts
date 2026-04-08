@@ -8,6 +8,19 @@ function hasCrudSignals(text: string): boolean {
   return /\b(get|post|put|delete|crud)\b/i.test(text);
 }
 
+function extractRequestedTargetDir(input: string): string | null {
+  const absolutePathMatch = input.match(/(\/[^\s]+)/);
+  if (absolutePathMatch && absolutePathMatch[1]) {
+    return absolutePathMatch[1].replace(/[.,]$/, "");
+  }
+
+  const folderMatch = input.match(/folder baru(?: bernama)?\s+([A-Za-z0-9._-]+)/i);
+  if (folderMatch && folderMatch[1]) {
+    return folderMatch[1];
+  }
+  return null;
+}
+
 export function evaluateToolExecution(
   userInput: string,
   events: ExecutedToolEvent[]
@@ -35,6 +48,22 @@ export function evaluateToolExecution(
     );
     if (touchedFiles.length === 0) {
       return "Quality gate failed: CRUD task requested but no file changes were made.";
+    }
+  }
+
+  const requestedTargetDir = extractRequestedTargetDir(userInput);
+  if (requestedTargetDir) {
+    for (const event of events) {
+      if (event.toolName !== "write_file" && event.toolName !== "edit_file") {
+        continue;
+      }
+      const filePath = typeof event.input.path === "string" ? event.input.path : "";
+      if (!filePath) {
+        continue;
+      }
+      if (!filePath.includes(requestedTargetDir)) {
+        return `Quality gate failed: file change (${filePath}) is outside requested target (${requestedTargetDir}).`;
+      }
     }
   }
 

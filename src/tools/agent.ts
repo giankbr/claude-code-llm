@@ -4,8 +4,16 @@ import { streamResponse } from "../client";
 
 export const agentTool: Tool = {
   name: "agent",
-  description:
-    "Spawn a sub-agent to handle a task independently with its own context and tool pool",
+  description: `Launches a sub-agent to handle a complex, multi-step task autonomously.
+
+Usage:
+- Always include a short description (3-5 words) of what the agent will do in the task field.
+- Launch multiple agents concurrently when tasks are independent.
+- The agent result is not shown to the user directly — summarize the result in your response.
+- Clearly tell the agent whether to write code or just do research.
+- Agents have access to the same tools as the parent.
+- Pass relevant context (paths, constraints, stack requirements) via the context field.
+- Do not use agent for tasks that a single tool call can handle directly.`,
   input_schema: {
     type: "object",
     properties: {

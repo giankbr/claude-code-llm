@@ -32,7 +32,24 @@ function hasAbsolutePathOutsideWorkspace(command: string): boolean {
 
 export const bashTool: Tool = {
   name: "bash",
-  description: "Run a bash command and return stdout + stderr",
+  description: `Executes a given bash command and returns its output.
+
+The working directory persists between commands, but shell state does not.
+
+IMPORTANT: Avoid using this tool to run find, grep, cat, head, tail, sed, awk, or echo unless explicitly instructed or after verifying no dedicated tool can accomplish the task. Instead:
+- File search: use search_files (NOT find/ls)
+- Read files: use read_file (NOT cat/head/tail)
+- Edit files: use edit_file (NOT sed/awk)
+- Write files: use write_file (NOT echo/cat EOF)
+
+Instructions:
+- Before creating new directories/files, use list_dir to verify parent exists.
+- Always quote file paths containing spaces with double quotes.
+- Prefer absolute paths; avoid cd to change directories.
+- Chain dependent commands with &&. Issue independent commands in separate calls.
+- For git: prefer new commits over amending. Never skip hooks unless asked.
+- Avoid unnecessary sleep commands.
+- Commands timeout after 120000ms (2 min) by default.`,
   input_schema: {
     type: "object",
     properties: {

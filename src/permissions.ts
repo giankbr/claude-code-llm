@@ -30,6 +30,20 @@ function getSessionApprovalKey(sessionId: string, toolName: string): string {
   return `${sessionId}::${toolName}`;
 }
 
+function isApprovedForSession(sessionId: string | undefined, toolName: string): boolean {
+  if (!sessionId) {
+    return false;
+  }
+  return sessionApprovalCache.has(getSessionApprovalKey(sessionId, toolName));
+}
+
+function rememberSessionApproval(sessionId: string | undefined, toolName: string): void {
+  if (!sessionId) {
+    return;
+  }
+  sessionApprovalCache.add(getSessionApprovalKey(sessionId, toolName));
+}
+
 function loadPermissionsConfig(): PermissionsConfig {
   if (!existsSync(PERMISSIONS_FILE)) {
     return {};
@@ -111,11 +125,8 @@ export async function resolvePermission(
 
   // 3) Plan mode asks always
   if (effectiveMode === "plan") {
-    if (request.sessionId) {
-      const key = getSessionApprovalKey(request.sessionId, request.toolName);
-      if (sessionApprovalCache.has(key)) {
-        return true;
-      }
+    if (isApprovedForSession(request.sessionId, request.toolName)) {
+      return true;
     }
 
     const { confirmed } = await inquirer.prompt([
@@ -126,10 +137,8 @@ export async function resolvePermission(
         default: false,
       },
     ]);
-    if (confirmed && request.sessionId) {
-      sessionApprovalCache.add(
-        getSessionApprovalKey(request.sessionId, request.toolName)
-      );
+    if (confirmed) {
+      rememberSessionApproval(request.sessionId, request.toolName);
     }
     return confirmed;
   }
@@ -160,6 +169,9 @@ export async function resolvePermission(
     return true;
   }
   if (request.isDestructive) {
+    if (isApprovedForSession(request.sessionId, request.toolName)) {
+      return true;
+    }
     const { confirmed } = await inquirer.prompt([
       {
         type: "confirm",
@@ -168,6 +180,9 @@ export async function resolvePermission(
         default: false,
       },
     ]);
+    if (confirmed) {
+      rememberSessionApproval(request.sessionId, request.toolName);
+    }
     return confirmed;
   }
 

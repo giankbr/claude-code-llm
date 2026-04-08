@@ -14,7 +14,13 @@ function resolveInWorkspace(inputPath: string): string | null {
 
 export const writeFileTool: Tool = {
   name: "write_file",
-  description: "Write content to a file (overwrites if exists)",
+  description: `Creates or overwrites a file with the given content.
+
+Usage:
+- ALWAYS prefer editing existing files (use edit_file) over writing new ones unless explicitly required.
+- When creating a new file, first use list_dir to verify the target directory exists.
+- Never generate binary content or long non-textual content.
+- Do not add comments that merely narrate what the code does.`,
   input_schema: {
     type: "object",
     properties: {
