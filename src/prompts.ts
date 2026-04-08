@@ -13,6 +13,35 @@ function pickDynamicModules(taskHint: string) {
   return dynamic.slice(0, 3);
 }
 
+const TOOL_USE_RULES = `
+CRITICAL TOOL-USE RULES (follow strictly):
+
+1. ONE TOOL CALL PER STEP. Complete one action, see the result, then decide the next.
+2. NEVER call the same tool twice in a row with the same arguments.
+3. NEVER call list_dir or read_file without a specific path argument.
+4. ALWAYS provide ALL required arguments. Never send empty {}.
+5. After writing a file, move to the NEXT file — do not rewrite the same file.
+6. When user asks a follow-up (e.g. "can you run it?"), refer to files you just created, not random files.
+
+TOOL CALL PATTERNS:
+
+Create multiple files (scaffold):
+  Step 1: write_file({"path":"api/server.js","content":"..."})
+  Step 2: write_file({"path":"api/routes/users.js","content":"..."})
+  Step 3: write_file({"path":"api/package.json","content":"..."})
+  Step 4: bash({"command":"cd api && npm install"})
+
+Edit existing file:
+  Step 1: read_file({"path":"index.html"})
+  Step 2: edit_file({"path":"index.html","find":"<old text>","replace":"<new text>"})
+
+Run a project:
+  Step 1: read_file({"path":"package.json"})  — check scripts
+  Step 2: bash({"command":"node api/server.js"})
+
+IMPORTANT: text responses alone do NOT modify files. You MUST call tools.
+`.trim();
+
 function buildModularCodePrompt(taskHint = ""): string {
   const stablePrefix = PROMPT_MODULES.filter((module) => module.stable);
   const dynamicSuffix = pickDynamicModules(taskHint);
@@ -31,6 +60,8 @@ function buildModularCodePrompt(taskHint = ""): string {
     "",
     "Tool-Specific Prompt Bundle:",
     toolPromptBundle,
+    "",
+    TOOL_USE_RULES,
     "",
     "Runtime policy:",
     "- Use only registered tools and follow permission checks.",

@@ -157,7 +157,14 @@ export function buildToolPromptBundle(tools: Pick<Tool, "name">[]): string {
 }
 
 export function composeToolDescription(baseDescription: string, toolName: string): string {
+  const compactMode = process.env.COMPACT_TOOL_DESCRIPTIONS === "true";
   const spec = getToolPrompt(toolName);
+
+  if (compactMode) {
+    const example = spec.examples?.[0] ? `\nExample: ${spec.examples[0]}` : "";
+    return `${baseDescription.trim()}${example}`;
+  }
+
   if (spec.fullPrompt) {
     return `${baseDescription.trim()}\n\nTool-specific guidance:\n${spec.fullPrompt}`;
   }

@@ -504,19 +504,37 @@ export class OpenAICompatProvider implements Provider {
     }
 
     const systemPrompt = getSystemPromptForTask(lastUserPrompt);
-    const systemWithContext = autoReadContent
-      ? `${systemPrompt}\n\n` +
-        `[AUTO-LOADED FILE CONTEXT]\n` +
+    let systemWithContext = systemPrompt;
+
+    if (autoReadContent && mentionedFile) {
+      systemWithContext +=
+        `\n\n[AUTO-LOADED FILE CONTEXT]\n` +
         `The user is working on "${mentionedFile}". Current file content:\n` +
         `${autoReadContent}\n` +
         `[END FILE CONTEXT]\n\n` +
         `IMPORTANT: The file content is loaded above. When the user asks to modify this file, ` +
         `call edit_file with path="${mentionedFile}", find=<exact text to replace>, replace=<new text>. ` +
-        `Do NOT just describe changes — you MUST call the tool to apply them.`
-      : systemPrompt;
+        `Do NOT just describe changes — you MUST call the tool to apply them.`;
+    }
 
+    // Session state is injected dynamically via buildSystemMessage()
+
+    const buildSystemMessage = () => {
+      let sys = systemWithContext;
+      if (sessionCreatedFiles.length > 0) {
+        const stateBlock =
+          `\n\n[SESSION STATE]\n` +
+          `Files created/modified so far: ${sessionCreatedFiles.join(", ")}\n` +
+          `Files read so far: ${sessionReadFiles.join(", ")}\n` +
+          `When the user asks follow-up questions (e.g. "can you run it?", "bisa dirun?"), ` +
+          `they are referring to these files — NOT random project files.\n` +
+          `[END SESSION STATE]`;
+        sys = sys.replace(/\n\n\[SESSION STATE\][\s\S]*?\[END SESSION STATE\]/, "") + stateBlock;
+      }
+      return sys;
+    };
     const openaiMessages: any[] = [
-      { role: "system", content: systemWithContext },
+      { role: "system", content: buildSystemMessage() },
       ...messages.map((m) => ({
         role: m.role,
         content: m.content,
@@ -545,6 +563,8 @@ export class OpenAICompatProvider implements Provider {
     let lastWrittenPath: string | undefined;
     const toolNameCallCount = new Map<string, number>();
     const TOOL_NAME_MAX_REPEAT = 4;
+    const sessionCreatedFiles: string[] = [];
+    const sessionReadFiles: string[] = [];
     while (true) {
       if (depth > MAX_TOOL_DEPTH) {
         yield "\nTool loop depth limit reached.\n";
@@ -553,6 +573,9 @@ export class OpenAICompatProvider implements Provider {
       if (options?.signal?.aborted) {
         throw new Error("Cancelled by user");
       }
+      // Refresh system message with latest session state
+      openaiMessages[0] = { role: "system", content: buildSystemMessage() };
+
       let fullResponse = "";
       let toolCalls: Array<{
         id: string;
@@ -784,7 +807,6 @@ export class OpenAICompatProvider implements Provider {
           });
           return;
         }
-        // Also stop if the same tool name is called too many times (even with different args)
         const nameCount = (toolNameCallCount.get(normalized.name) ?? 0) + 1;
         toolNameCallCount.set(normalized.name, nameCount);
         if (nameCount > TOOL_NAME_MAX_REPEAT) {
@@ -808,16 +830,24 @@ export class OpenAICompatProvider implements Provider {
           signal: options?.signal,
         });
 
-        if (
+        const toolSucceeded =
           typeof normalized.arguments.path === "string" &&
           !result.toLowerCase().includes("failed") &&
-          !result.toLowerCase().includes("error")
-        ) {
+          !result.toLowerCase().includes("error");
+
+        if (toolSucceeded) {
+          const filePath = normalized.arguments.path as string;
           if (normalized.name === "write_file" || normalized.name === "edit_file") {
-            lastWrittenPath = normalized.arguments.path as string;
+            lastWrittenPath = filePath;
+            if (!sessionCreatedFiles.includes(filePath)) {
+              sessionCreatedFiles.push(filePath);
+            }
           }
           if (["write_file", "edit_file", "read_file"].includes(normalized.name)) {
-            lastMentionedFilePath = normalized.arguments.path as string;
+            lastMentionedFilePath = filePath;
+          }
+          if (normalized.name === "read_file" && !sessionReadFiles.includes(filePath)) {
+            sessionReadFiles.push(filePath);
           }
         }
 
@@ -858,6 +888,18 @@ export class OpenAICompatProvider implements Provider {
           tool_call_id: toolCall.id,
           content: result,
         });
+
+        // Nudge: after successful write_file, remind model what's done and what's next
+        if (normalized.name === "write_file" && toolSucceeded && sessionCreatedFiles.length > 0) {
+          const remaining = sessionCreatedFiles.length;
+          openaiMessages.push({
+            role: "user",
+            content:
+              `System: ✓ ${normalized.arguments.path} written successfully (${remaining} file(s) created so far: ${sessionCreatedFiles.join(", ")}). ` +
+              `If there are more files to create, call write_file for the NEXT file now. ` +
+              `Do NOT re-write files that already exist. Do NOT describe what to do — call the tool.`,
+          });
+        }
       }
       depth += 1;
     }
