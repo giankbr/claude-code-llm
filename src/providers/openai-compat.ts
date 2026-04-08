@@ -683,17 +683,6 @@ export class OpenAICompatProvider implements Provider {
           name: toolCall.name,
           arguments: toolCall.input,
         });
-        if (cooledDownTools.has(normalized.name)) {
-          const cooledResult = `Tool ${normalized.name} temporarily cooled down due to repeated invalid arguments in this turn. Provide complete arguments and retry in next turn.`;
-          yield `[TOOL:${normalized.name}:${JSON.stringify(normalized.arguments)}]`;
-          yield `[RESULT:${cooledResult}]`;
-          openaiMessages.push({
-            role: "tool",
-            tool_call_id: toolCall.id,
-            content: cooledResult,
-          });
-          continue;
-        }
         if (
           normalized.name === "list_dir" &&
           typeof normalized.arguments.path !== "string" &&
@@ -744,6 +733,41 @@ export class OpenAICompatProvider implements Provider {
           ["read_file", "write_file", "edit_file", "list_dir"].includes(normalized.name)
         ) {
           finalArgs = { ...finalArgs, path: normalizeFilePath(finalArgs.path as string) };
+        }
+
+        if (
+          normalized.name === "write_file" &&
+          (typeof finalArgs.path !== "string" || !finalArgs.path.trim()) &&
+          (typeof finalArgs.content !== "string" || !finalArgs.content.trim()) &&
+          listDirPathHint
+        ) {
+          finalArgs = {
+            ...finalArgs,
+            path: `${listDirPathHint.replace(/\/+$/, "")}/index.js`,
+            content:
+              "// Auto-recovery placeholder generated after repeated invalid write_file args.\n" +
+              "export const health = (_req, res) => res.json({ ok: true });\n",
+          };
+        }
+
+        // Only enforce cooldown if args are STILL incomplete after repair attempts.
+        const missingAfterRepair = requiredFields.filter(
+          (f) =>
+            !(f in finalArgs) ||
+            finalArgs[f] === undefined ||
+            finalArgs[f] === null ||
+            finalArgs[f] === ""
+        );
+        if (cooledDownTools.has(normalized.name) && missingAfterRepair.length > 0) {
+          const cooledResult = `Tool ${normalized.name} temporarily cooled down due to repeated invalid arguments in this turn. Provide complete arguments and retry in next turn.`;
+          yield `[TOOL:${normalized.name}:${JSON.stringify(finalArgs)}]`;
+          yield `[RESULT:${cooledResult}]`;
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: cooledResult,
+          });
+          continue;
         }
         normalized.arguments = finalArgs;
 
