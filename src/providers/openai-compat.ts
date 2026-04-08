@@ -453,9 +453,35 @@ export class OpenAICompatProvider implements Provider {
       }
     }
     const isGemma = /gemma/i.test(this.model);
-    const maxTokens = isGemma ? 1536 : 2048;
+    const maxTokens = isGemma ? 1536 : 4096;
+    let autoReadContent = "";
+    const isDetailedRequest =
+      lastUserPrompt.length > 150 ||
+      /\b(improve|update|change|redesign|refactor|add|tambah|ubah|ganti|buat)\b/i.test(lastUserPrompt);
+    const mentionedFile = lastMentionedFilePath;
+    if (isDetailedRequest && mentionedFile) {
+      try {
+        const resolvedPath = mentionedFile.startsWith("/")
+          ? mentionedFile
+          : `${process.cwd()}/${mentionedFile}`;
+        autoReadContent = await Bun.file(resolvedPath).text();
+      } catch {}
+    }
+
+    const systemPrompt = getSystemPromptForTask(lastUserPrompt);
+    const systemWithContext = autoReadContent
+      ? `${systemPrompt}\n\n` +
+        `[AUTO-LOADED FILE CONTEXT]\n` +
+        `The user is working on "${mentionedFile}". Current file content:\n` +
+        `${autoReadContent}\n` +
+        `[END FILE CONTEXT]\n\n` +
+        `IMPORTANT: The file content is loaded above. When the user asks to modify this file, ` +
+        `call edit_file with path="${mentionedFile}", find=<exact text to replace>, replace=<new text>. ` +
+        `Do NOT just describe changes — you MUST call the tool to apply them.`
+      : systemPrompt;
+
     const openaiMessages: any[] = [
-      { role: "system", content: getSystemPromptForTask(lastUserPrompt) },
+      { role: "system", content: systemWithContext },
       ...messages.map((m) => ({
         role: m.role,
         content: m.content,
