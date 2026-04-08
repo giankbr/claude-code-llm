@@ -1,0 +1,20 @@
+{
+  "name": "agent-ai-llm",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.85.0",
+    "@types/inquirer": "^9.0.9",
+    "inquirer": "^13.4.1",
+    "openai": "^6.33.0",
+    "ora": "^9.3.0",
+    "picocolors": "^1.1.1"
+  }
+}
