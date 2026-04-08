@@ -627,6 +627,13 @@ export class OpenAICompatProvider implements Provider {
                 m.content
               )
           );
+        const userWantsScaffoldOrBuild = messages.some(
+          (m) =>
+            m.role === "user" &&
+            /\b(generate|create|build|scaffold|setup|crud|api|express|nestjs|hono|fastify|project|boilerplate|init|buat)\b/i.test(
+              m.content
+            )
+        );
         // Also catch when model describes UI changes (any verb form)
         const modelDescribesChanges =
           /\b(updat|chang|add|improv|enhanc|modif|replac|insert|creat|redesign|refactor|sudah|berhasil|ditambah|diubah|diperbaiki|I'll|I'm|Let me|Here's)\b/i.test(
@@ -637,7 +644,7 @@ export class OpenAICompatProvider implements Provider {
           );
 
         const shouldRetry =
-          (userWantsFileChange || modelDescribesChanges) &&
+          (userWantsFileChange || userWantsScaffoldOrBuild || modelDescribesChanges) &&
           depth < MAX_TOOL_DEPTH - 2;
 
         if (shouldRetry) {
@@ -655,8 +662,11 @@ export class OpenAICompatProvider implements Provider {
                   ? `Target file: ${lastMentionedFilePath}\n\n`
                   : "") +
                 `You MUST call tools to actually modify files. Do this NOW:\n` +
-                `1. Call read_file({"path": "${lastMentionedFilePath || "index.html"}"}) to read current content\n` +
-                `2. Call edit_file({"path": "${lastMentionedFilePath || "index.html"}", "find": "<exact old text>", "replace": "<new text>"}) to apply changes\n` +
+                `1. If editing existing file: call read_file + edit_file.\n` +
+                `2. If creating new project/files: call list_dir, then write_file with explicit path+content.\n` +
+                `3. For dependency/setup commands, call bash with explicit command.\n` +
+                `Example edit: edit_file({"path":"${lastMentionedFilePath || "index.html"}","find":"<old>","replace":"<new>"})\n` +
+                `Example create: write_file({"path":"api/src/index.ts","content":"..."})\n` +
                 `Do NOT respond with text. Call the tools immediately.`,
             }
           );
