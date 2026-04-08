@@ -10,8 +10,12 @@ const MAX_SAME_TOOL_REPEAT = 3;
 const MAX_INVALID_TOOL_INPUTS = 3;
 const TOOL_COOLDOWN_THRESHOLD = 2;
 
-/** Default 90s — local inference can be slow; connection failures usually fail faster. */
-function resolveOpenAITimeoutMs(): number {
+/**
+ * Max wait for the first model output (text or tool call delta).
+ * OPENAI_TIMEOUT_MS — after this, the request is aborted if nothing useful arrived yet.
+ * Does NOT cap total streaming length (see OPENAI_HTTP_TIMEOUT_MS).
+ */
+function resolveOpenAIFirstTokenTimeoutMs(): number {
   const raw = process.env.OPENAI_TIMEOUT_MS;
   if (raw === undefined || raw === "") {
     return 90_000;
@@ -21,6 +25,19 @@ function resolveOpenAITimeoutMs(): number {
     return 90_000;
   }
   return Math.min(n, 600_000);
+}
+
+/** Max time for the full HTTP stream (long answers). Default 15 minutes. */
+function resolveOpenAIHttpTimeoutMs(): number {
+  const raw = process.env.OPENAI_HTTP_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return 900_000;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 10_000) {
+    return 900_000;
+  }
+  return Math.min(n, 3_600_000);
 }
 
 /**
@@ -67,6 +84,17 @@ export function formatOpenAICompatConnectionError(
     return `API menolak autentikasi (401/403). Cek OPENAI_API_KEY di .env.${urlLine}`;
   }
   return `Request gagal: ${e.message}${urlLine}`;
+}
+
+function formatFirstTokenTimeoutMessage(ms: number, baseURL: string): string {
+  const sec = Math.max(1, Math.round(ms / 1000));
+  const urlLine = baseURL ? `OPENAI_BASE_URL: ${baseURL}\n` : "";
+  return (
+    `Tidak ada output dari model dalam ${sec} detik (batas OPENAI_TIMEOUT_MS / first token).\n` +
+    `${urlLine}` +
+    `Biasanya: LM Studio belum jalan, model belum di-load, atau GPU/CPU kelebihan beban.\n` +
+    `Kalau inference memang lambat, naikkan OPENAI_TIMEOUT_MS. Untuk batas panjang jawaban streaming, pakai OPENAI_HTTP_TIMEOUT_MS (default 15 menit).`
+  );
 }
 
 function parseToolArguments(rawArguments: string): Record<string, unknown> {
@@ -486,9 +514,8 @@ export class OpenAICompatProvider implements Provider {
   constructor() {
     const provider = process.env.PROVIDER || "anthropic";
 
-    const timeout = resolveOpenAITimeoutMs();
     const clientOpts = {
-      timeout,
+      timeout: resolveOpenAIHttpTimeoutMs(),
       maxRetries: 0,
     } as const;
 
@@ -654,6 +681,28 @@ export class OpenAICompatProvider implements Provider {
       const baseURLForErrors =
         process.env.OPENAI_BASE_URL || process.env.OLLAMA_BASE_URL || "";
 
+      const firstTokenMs = resolveOpenAIFirstTokenTimeoutMs();
+      const requestAc = new AbortController();
+      let ttfTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+        requestAc.abort();
+      }, firstTokenMs);
+      let gotFirstProgress = false;
+
+      const onParentAbort = () => {
+        if (ttfTimer) {
+          clearTimeout(ttfTimer);
+          ttfTimer = undefined;
+        }
+        requestAc.abort();
+      };
+      if (options?.signal) {
+        if (options.signal.aborted) {
+          onParentAbort();
+        } else {
+          options.signal.addEventListener("abort", onParentAbort, { once: true });
+        }
+      }
+
       let stream: AsyncIterable<any>;
       try {
         stream = (await this.client.chat.completions.create({
@@ -663,9 +712,20 @@ export class OpenAICompatProvider implements Provider {
           max_tokens: maxTokens,
           tool_choice: "auto",
           ...(openaiTools.length > 0 && { tools: openaiTools }),
-          signal: options?.signal,
+          signal: requestAc.signal,
         } as any)) as unknown as AsyncIterable<any>;
       } catch (err) {
+        if (ttfTimer) {
+          clearTimeout(ttfTimer);
+          ttfTimer = undefined;
+        }
+        if (options?.signal?.aborted) {
+          throw new Error("Cancelled by user");
+        }
+        if (!gotFirstProgress && requestAc.signal.aborted) {
+          yield `\n${formatFirstTokenTimeoutMessage(firstTokenMs, baseURLForErrors)}\n`;
+          return;
+        }
         yield `\n${formatOpenAICompatConnectionError(err, baseURLForErrors)}\n`;
         return;
       }
@@ -678,6 +738,22 @@ export class OpenAICompatProvider implements Provider {
           if (!chunk.choices[0]) continue;
 
           const delta = chunk.choices[0].delta;
+
+          const hasToolDelta =
+            delta.tool_calls &&
+            delta.tool_calls.some(
+              (tc: { function?: { name?: string; arguments?: string } }) =>
+                (tc.function?.name && tc.function.name.length > 0) ||
+                (tc.function?.arguments && tc.function.arguments.length > 0)
+            );
+
+          if (!gotFirstProgress && (delta.content || hasToolDelta)) {
+            gotFirstProgress = true;
+            if (ttfTimer) {
+              clearTimeout(ttfTimer);
+              ttfTimer = undefined;
+            }
+          }
 
           if (delta.content) {
             fullResponse += delta.content;
@@ -709,12 +785,27 @@ export class OpenAICompatProvider implements Provider {
           }
         }
       } catch (err) {
+        if (ttfTimer) {
+          clearTimeout(ttfTimer);
+          ttfTimer = undefined;
+        }
         const message = err instanceof Error ? err.message : String(err);
         if (message.includes("Cancelled by user")) {
           throw err;
         }
+        if (options?.signal?.aborted) {
+          throw new Error("Cancelled by user");
+        }
+        if (!gotFirstProgress && requestAc.signal.aborted) {
+          yield `\n${formatFirstTokenTimeoutMessage(firstTokenMs, baseURLForErrors)}\n`;
+          return;
+        }
         yield `\n${formatOpenAICompatConnectionError(err, baseURLForErrors)}\n`;
         return;
+      } finally {
+        if (ttfTimer) {
+          clearTimeout(ttfTimer);
+        }
       }
 
       for (const toolCall of toolCalls) {
