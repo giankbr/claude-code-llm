@@ -5,7 +5,7 @@ import { executeTool } from "../tools/registry";
 import { getSystemPromptForTask } from "../prompts";
 import { normalizeToolCallAlias } from "../tools/alias-map";
 import os from "os";
-const MAX_TOOL_DEPTH = 10;
+const MAX_TOOL_DEPTH = 6;
 const MAX_SAME_TOOL_REPEAT = 3;
 const MAX_INVALID_TOOL_INPUTS = 3;
 const TOOL_COOLDOWN_THRESHOLD = 2;
@@ -543,6 +543,8 @@ export class OpenAICompatProvider implements Provider {
     const invalidByTool = new Map<string, number>();
     const cooledDownTools = new Set<string>();
     let lastWrittenPath: string | undefined;
+    const toolNameCallCount = new Map<string, number>();
+    const TOOL_NAME_MAX_REPEAT = 4;
     while (true) {
       if (depth > MAX_TOOL_DEPTH) {
         yield "\nTool loop depth limit reached.\n";
@@ -745,21 +747,6 @@ export class OpenAICompatProvider implements Provider {
           finalArgs = { ...finalArgs, path: normalizeFilePath(finalArgs.path as string) };
         }
 
-        if (
-          normalized.name === "write_file" &&
-          (typeof finalArgs.path !== "string" || !finalArgs.path.trim()) &&
-          (typeof finalArgs.content !== "string" || !finalArgs.content.trim()) &&
-          listDirPathHint
-        ) {
-          finalArgs = {
-            ...finalArgs,
-            path: `${listDirPathHint.replace(/\/+$/, "")}/index.js`,
-            content:
-              "// Auto-recovery placeholder generated after repeated invalid write_file args.\n" +
-              "export const health = (_req, res) => res.json({ ok: true });\n",
-          };
-        }
-
         // Only enforce cooldown if args are STILL incomplete after repair attempts.
         const missingAfterRepair = requiredFields.filter(
           (f) =>
@@ -796,6 +783,20 @@ export class OpenAICompatProvider implements Provider {
               "Stopped repeated identical tool calls to avoid loop. Please refine the request with a specific target path or action.",
           });
           return;
+        }
+        // Also stop if the same tool name is called too many times (even with different args)
+        const nameCount = (toolNameCallCount.get(normalized.name) ?? 0) + 1;
+        toolNameCallCount.set(normalized.name, nameCount);
+        if (nameCount > TOOL_NAME_MAX_REPEAT) {
+          const skipMsg = `Skipping ${normalized.name} — called ${nameCount} times this turn, likely looping.`;
+          yield `[TOOL:${normalized.name}:${JSON.stringify(normalized.arguments)}]`;
+          yield `[RESULT:${skipMsg}]`;
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: skipMsg,
+          });
+          continue;
         }
 
         yield `[TOOL:${normalized.name}:${JSON.stringify(normalized.arguments)}]`;
