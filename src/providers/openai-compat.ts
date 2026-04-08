@@ -123,6 +123,9 @@ function getRequiredFields(
   return tool?.input_schema.required ?? [];
 }
 
+const FILE_EXT_RE =
+  /\b([A-Za-z0-9._/-]+\.(?:html|css|js|ts|mjs|cjs|json|md|txt|jsx|tsx|py|sh|yaml|yml|env|toml|sql|rs|go|java|kt|swift|rb|php|c|cpp|h))\b/i;
+
 interface ExtractedToolArgs {
   path?: string;
   content?: string;
@@ -210,7 +213,8 @@ async function repairArgsWithModelCall(
   args: Record<string, unknown>,
   required: string[],
   userRequest: string,
-  lastWrittenPath?: string
+  lastWrittenPath?: string,
+  lastMentionedFilePath?: string
 ): Promise<{ repaired: Record<string, unknown>; wasRepaired: boolean }> {
   const missing = required.filter(
     (f) => !(f in args) || args[f] === undefined || args[f] === null || args[f] === ""
@@ -264,16 +268,20 @@ async function repairArgsWithModelCall(
   }
 
   if (toolName === "read_file" || toolName === "list_dir") {
+    // Priority 1: file written this turn
     if (lastWrittenPath) {
       return { repaired: { ...args, path: lastWrittenPath }, wasRepaired: true };
     }
-    // Scan userRequest for a filename before spending an API call
-    const fileHint = userRequest.match(
-      /\b([A-Za-z0-9._/-]+\.(?:html|css|js|ts|json|md|txt|jsx|tsx|py|sh|yaml|yml|env))\b/i
-    );
-    if (fileHint?.[1]) {
-      return { repaired: { ...args, path: fileHint[1] }, wasRepaired: true };
+    // Priority 2: any filename in the current user prompt
+    const promptHint = userRequest.match(FILE_EXT_RE);
+    if (promptHint?.[1]) {
+      return { repaired: { ...args, path: normalizeFilePath(promptHint[1]) }, wasRepaired: true };
     }
+    // Priority 3: any filename mentioned anywhere in conversation history
+    if (lastMentionedFilePath) {
+      return { repaired: { ...args, path: lastMentionedFilePath }, wasRepaired: true };
+    }
+    // Priority 4: ask the model
     repairPrompt =
       `The user requested: "${userRequest}"\n\n` +
       `Which file path should be read? Reply with ONLY the file path (e.g. index.html or src/app.ts):`;
@@ -418,6 +426,13 @@ export class OpenAICompatProvider implements Provider {
     const hintSource = selectHintSource(messages);
     const lastUserPrompt = hintSource || [...messages].reverse().find((m) => m.role === "user")?.content || "";
     const listDirPathHint = extractListDirPathHint(lastUserPrompt);
+    let lastMentionedFilePath: string | undefined;
+    for (const msg of messages) {
+      if (msg.role === "user") {
+        const m = msg.content.match(FILE_EXT_RE);
+        if (m?.[1]) lastMentionedFilePath = normalizeFilePath(m[1]);
+      }
+    }
     const isGemma = /gemma/i.test(this.model);
     const maxTokens = isGemma ? 1536 : 2048;
     const openaiMessages: any[] = [
@@ -585,13 +600,13 @@ export class OpenAICompatProvider implements Provider {
             finalArgs,
             requiredFields,
             lastUserPrompt,
-            lastWrittenPath
+            lastWrittenPath,
+            lastMentionedFilePath
           );
           if (modelRepair.wasRepaired) {
             finalArgs = modelRepair.repaired;
           }
         }
-        // Normalise path arg for any file tool to prevent doubled-root paths
         if (
           typeof finalArgs.path === "string" &&
           ["read_file", "write_file", "edit_file", "list_dir"].includes(normalized.name)
@@ -626,13 +641,17 @@ export class OpenAICompatProvider implements Provider {
           signal: options?.signal,
         });
 
-        // Track the last successfully written file for read_file repair
         if (
-          (normalized.name === "write_file" || normalized.name === "edit_file") &&
           typeof normalized.arguments.path === "string" &&
-          !result.toLowerCase().includes("failed")
+          !result.toLowerCase().includes("failed") &&
+          !result.toLowerCase().includes("error")
         ) {
-          lastWrittenPath = normalized.arguments.path as string;
+          if (normalized.name === "write_file" || normalized.name === "edit_file") {
+            lastWrittenPath = normalized.arguments.path as string;
+          }
+          if (["write_file", "edit_file", "read_file"].includes(normalized.name)) {
+            lastMentionedFilePath = normalized.arguments.path as string;
+          }
         }
 
         yield `[RESULT:${result}]`;
