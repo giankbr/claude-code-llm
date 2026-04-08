@@ -517,7 +517,9 @@ export class OpenAICompatProvider implements Provider {
         `Do NOT just describe changes — you MUST call the tool to apply them.`;
     }
 
-    // Session state is injected dynamically via buildSystemMessage()
+    // Session state — declared before buildSystemMessage so the closure can access them
+    const sessionCreatedFiles: string[] = [];
+    const sessionReadFiles: string[] = [];
 
     const buildSystemMessage = () => {
       let sys = systemWithContext;
@@ -563,8 +565,6 @@ export class OpenAICompatProvider implements Provider {
     let lastWrittenPath: string | undefined;
     const toolNameCallCount = new Map<string, number>();
     const TOOL_NAME_MAX_REPEAT = 4;
-    const sessionCreatedFiles: string[] = [];
-    const sessionReadFiles: string[] = [];
     while (true) {
       if (depth > MAX_TOOL_DEPTH) {
         yield "\nTool loop depth limit reached.\n";
