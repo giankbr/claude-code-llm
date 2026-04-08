@@ -255,19 +255,20 @@ async function repairArgsWithModelCall(
       if (!currentContent) return { repaired: args, wasRepaired: false };
 
       const contextBlock = conversationContext
-        ? `\nConversation context (what the user has asked so far):\n${conversationContext}\n`
+        ? `\nConversation context:\n${conversationContext}\n`
         : "";
       const editPrompt =
         `You are editing the file "${filePath}".${contextBlock}\n` +
         `The user's latest request: "${userRequest}"\n\n` +
         `Current file content:\n${currentContent}\n\n` +
-        `IMPORTANT RULES:\n` +
-        `- Output ONLY the complete updated file content\n` +
-        `- Apply ALL requested changes\n` +
-        `- Keep ALL existing content that was not asked to be changed\n` +
-        `- The output must be a complete, valid file (including closing tags)\n` +
-        `- No explanations, no markdown fences, no commentary\n` +
-        `- Start with the first line of the file and end with the last line`;
+        `INSTRUCTIONS:\n` +
+        `1. Apply ALL the changes described in the conversation context above\n` +
+        `2. Output the COMPLETE updated file — every single line from start to end\n` +
+        `3. Keep all existing content that was not asked to be changed\n` +
+        `4. The file MUST be valid and complete (e.g. HTML must have closing </html>)\n` +
+        `5. NO explanations, NO markdown fences, NO comments about changes\n` +
+        `6. Start output with the very first line of the file\n` +
+        `7. If user said "yes" or "proceed", apply all changes that were discussed previously`;
       // Scale token limit based on file size to prevent truncation
       const estimatedTokens = Math.ceil(currentContent.length / 3);
       const repairMaxTokens = Math.max(8192, estimatedTokens + 2048);
@@ -583,22 +584,31 @@ export class OpenAICompatProvider implements Provider {
         .filter((toolCall) => isValidToolName(toolCall.name));
 
       if (validToolCalls.length === 0) {
-        // Hallucination guard: model claims "done/updated/created" but made no tool calls
-        const claimsDone =
-          /\b(done|selesai|sudah|berhasil|successfully|updated|created|ditambahkan|diubah|diganti)\b/i.test(
+        const claimsAction =
+          /\b(done|selesai|sudah|berhasil|successfully|updated|created|added|changed|improved|enhanced|modified|replaced|inserted|ditambahkan|diubah|diganti|diperbaiki|I've|Here's what)\b/i.test(
             fullResponse
           ) &&
-          /\b(file|index\.html|\.html|\.ts|\.js|\.css|\.json)\b/i.test(fullResponse);
-        if (claimsDone && depth < MAX_TOOL_DEPTH - 1) {
+          (
+            /\b(file|section|styling|css|html|component|layout|footer|header|hero|card|button|font|color|gradient|animation)\b/i.test(fullResponse) ||
+            !!lastMentionedFilePath
+          );
+        if (claimsAction && depth < MAX_TOOL_DEPTH - 1) {
           depth += 1;
+          const changeDescription = fullResponse.slice(0, 500);
           openaiMessages.push(
             { role: "assistant", content: fullResponse },
             {
               role: "user",
               content:
-                "System feedback: You described changes but did NOT actually call any tool. " +
-                "You MUST call edit_file or write_file to apply changes. " +
-                "Do it now — read the file with read_file, then call edit_file with path, find, and replace.",
+                `System feedback: You described these changes but did NOT call any tool:\n` +
+                `"${changeDescription}"\n\n` +
+                `NONE of these changes were applied to the file. You MUST call tools to modify files.\n` +
+                (lastMentionedFilePath
+                  ? `Target file: ${lastMentionedFilePath}\n`
+                  : "") +
+                `Step 1: Call read_file to get current content.\n` +
+                `Step 2: Call edit_file with path, find (exact text from file), and replace (new text).\n` +
+                `Do it NOW.`,
             }
           );
           continue;
@@ -642,8 +652,6 @@ export class OpenAICompatProvider implements Provider {
         ) {
           normalized.arguments = { ...normalized.arguments, path: listDirPathHint };
         }
-
-        // Stage 1: text-extraction repair (fast, no API call)
         const requiredFields = getRequiredFields(normalized.name, tools);
         const textRepair = repairToolArgs(
           normalized.name,
@@ -651,19 +659,21 @@ export class OpenAICompatProvider implements Provider {
           requiredFields,
           fullResponse
         );
-        let finalArgs = textRepair.wasRepaired ? textRepair.repaired : normalized.arguments;
 
-        // Stage 2: targeted model call when fields are still missing
+        let finalArgs = textRepair.wasRepaired ? textRepair.repaired : normalized.arguments;
         const stillMissing = requiredFields.filter(
           (f) => !(f in finalArgs) || finalArgs[f] === undefined || finalArgs[f] === null || finalArgs[f] === ""
         );
         if (stillMissing.length > 0) {
-          // Build conversation context from user messages for repair quality
-          const convContext = messages
+          const userContext = messages
             .filter((m) => m.role === "user")
             .slice(-5)
-            .map((m) => `- ${m.content.slice(0, 200)}`)
+            .map((m) => `- User: ${m.content.slice(0, 200)}`)
             .join("\n");
+          const assistantIntent = fullResponse
+            ? `\nAssistant's planned changes:\n${fullResponse.slice(0, 800)}`
+            : "";
+          const convContext = userContext + assistantIntent;
           const modelRepair = await repairArgsWithModelCall(
             this.client,
             this.model,
