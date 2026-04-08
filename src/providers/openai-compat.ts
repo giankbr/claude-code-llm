@@ -215,7 +215,8 @@ async function repairArgsWithModelCall(
   userRequest: string,
   lastWrittenPath?: string,
   lastMentionedFilePath?: string,
-  conversationContext?: string
+  conversationContext?: string,
+  targetDirHint?: string
 ): Promise<{ repaired: Record<string, unknown>; wasRepaired: boolean }> {
   let missing = required.filter(
     (f) => !(f in args) || args[f] === undefined || args[f] === null || args[f] === ""
@@ -311,8 +312,12 @@ async function repairArgsWithModelCall(
     const needPath = missing.includes("path");
     const needContent = missing.includes("content");
     if (needPath && needContent) {
+      const dirHintLine = targetDirHint
+        ? `Target directory hint: ${targetDirHint}\nUse a path INSIDE this directory.\n`
+        : "";
       repairPrompt =
         `The user requested: "${userRequest}"\n\n` +
+        dirHintLine +
         `You must create a file. Reply ONLY in this exact format, nothing else:\n` +
         `PATH: <filename>\nCONTENT:\n<complete file content>`;
     } else if (needContent) {
@@ -359,6 +364,31 @@ async function repairArgsWithModelCall(
           repaired.content = contentMatch[1].trim();
           wasRepaired = true;
         }
+        // Fallback 1: JSON payload { "path": "...", "content": "..." }
+        if (!wasRepaired) {
+          try {
+            const parsed = JSON.parse(text) as { path?: unknown; content?: unknown };
+            if (typeof parsed.path === "string" && typeof parsed.content === "string") {
+              repaired.path = parsed.path.trim();
+              repaired.content = parsed.content;
+              wasRepaired = true;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        // Fallback 2: fenced code only, derive path from directory hint
+        if (!wasRepaired) {
+          const codeOnly = text.match(/```[a-z]*\n?([\s\S]+?)```/i);
+          if (codeOnly?.[1]) {
+            repaired.content = codeOnly[1].trim();
+            const hintedPath = targetDirHint
+              ? `${targetDirHint.replace(/\/+$/, "")}/index.js`
+              : "index.js";
+            repaired.path = hintedPath;
+            wasRepaired = true;
+          }
+        }
       } else if (missing.includes("content")) {
         repaired.content = text;
         wasRepaired = true;
@@ -380,6 +410,10 @@ async function repairArgsWithModelCall(
       }
     }
 
+    // Final normalization for repaired paths
+    if (typeof repaired.path === "string" && repaired.path.trim()) {
+      repaired.path = normalizeFilePath(repaired.path);
+    }
     return { repaired, wasRepaired };
   } catch {
     return { repaired: args, wasRepaired: false };
@@ -698,7 +732,8 @@ export class OpenAICompatProvider implements Provider {
             lastUserPrompt,
             lastWrittenPath,
             lastMentionedFilePath,
-            convContext
+            convContext,
+            listDirPathHint ?? undefined
           );
           if (modelRepair.wasRepaired) {
             finalArgs = modelRepair.repaired;
