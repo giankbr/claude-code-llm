@@ -93,14 +93,21 @@ function parseLooseJsonObject(input: string): Record<string, unknown> | null {
   try {
     return JSON.parse(trimmed) as Record<string, unknown>;
   } catch {
-    const normalized = trimmed
+    // Try normalizing quotes and property names
+    let normalized = trimmed
       .replace(/'/g, "\"")
       .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
 
     try {
       return JSON.parse(normalized) as Record<string, unknown>;
     } catch {
-      return null;
+      // Last resort: try to strip trailing comma before }
+      try {
+        const withoutTrailingComma = normalized.replace(/,(\s*[}\]])/g, '$1');
+        return JSON.parse(withoutTrailingComma) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
     }
   }
 }

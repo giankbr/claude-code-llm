@@ -627,6 +627,11 @@ export class OpenAICompatProvider implements Provider {
           `[END SESSION STATE]`;
         sys = sys.replace(/\n\n\[SESSION STATE\][\s\S]*?\[END SESSION STATE\]/, "") + stateBlock;
       }
+      // Force JSON output for action requests
+      const isActionRequest = /\b(ubah|buat|edit|write|create|update|modify|run|jalankan|install|delete|remove)\b/i.test(lastUserPrompt);
+      if (isActionRequest) {
+        sys += `\n\n[EXECUTION REQUIREMENT]\nUser is requesting an action. You MUST emit JSON tool calls. Start your response with the JSON blocks, then explain. No text-only responses.`;
+      }
       return sys;
     };
     const openaiMessages: any[] = [
@@ -710,8 +715,9 @@ export class OpenAICompatProvider implements Provider {
           messages: openaiMessages as ChatCompletionMessageParam[],
           stream: true,
           max_tokens: maxTokens,
-          tool_choice: "auto",
-          ...(openaiTools.length > 0 && { tools: openaiTools }),
+          ...(openaiTools.length > 0
+            ? { tools: openaiTools, tool_choice: "auto" as const }
+            : {}),
           signal: requestAc.signal,
         } as any)) as unknown as AsyncIterable<any>;
       } catch (err) {
@@ -820,6 +826,9 @@ export class OpenAICompatProvider implements Provider {
         .filter((toolCall) => isValidToolName(toolCall.name));
 
       if (validToolCalls.length === 0) {
+        if (tools.length === 0) {
+          break;
+        }
         const userWantsFileChange =
           !!lastMentionedFilePath &&
           messages.some(

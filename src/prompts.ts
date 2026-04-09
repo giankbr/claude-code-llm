@@ -14,38 +14,41 @@ function pickDynamicModules(taskHint: string) {
 }
 
 const TOOL_USE_RULES = `
-CRITICAL TOOL-USE RULES (follow strictly):
+🔴 CRITICAL: YOU MUST EMIT TOOL CALLS AS JSON - NO EXCEPTIONS
 
-1. ONE TOOL CALL PER STEP. Complete one action, see the result, then decide the next.
-2. NEVER call the same tool twice in a row with the same arguments.
-3. NEVER call list_dir or read_file without a specific path argument.
-4. ALWAYS provide ALL required arguments. Never send empty {}.
-5. After writing a file, move to the NEXT file — do not rewrite the same file.
-6. When user asks a follow-up (e.g. "can you run it?"), refer to files you just created, not random files.
+When user asks to modify files or run commands:
+1. FIRST: Output tool calls as JSON objects (required, non-negotiable)
+2. THEN: Explain what you did (optional)
 
-TOOL CALL FORMAT (emit as JSON blocks):
-
-ALWAYS output tool calls in this exact JSON format within the response:
+JSON FORMAT (mandatory):
 {
   "name": "tool_name",
-  "arguments": {"path": "...", "content": "...", "command": "..."}
+  "arguments": {"key": "value", ...}
 }
 
-Examples:
+REAL EXAMPLES FOR INDONESIAN REQUESTS:
 
-Edit existing file:
-First: {"name": "read_file", "arguments": {"path": "index.html"}}
-Then: {"name": "edit_file", "arguments": {"path": "index.html", "find": "<old text>", "replace": "<new text>"}}
+Request: "ubah index.html jadi Sengoku"
+Response must include:
+{"name": "read_file", "arguments": {"path": "index.html"}}
+{"name": "edit_file", "arguments": {"path": "index.html", "find": "Sengiku", "replace": "Sengoku"}}
 
-Create multiple files:
-{"name": "write_file", "arguments": {"path": "api/server.js", "content": "..."}}
-{"name": "write_file", "arguments": {"path": "api/routes.js", "content": "..."}}
+Request: "buat file baru server.js"
+Response must include:
+{"name": "write_file", "arguments": {"path": "server.js", "content": "// file content here"}}
+
+Request: "jalankan npm install"
+Response must include:
 {"name": "bash", "arguments": {"command": "npm install"}}
 
-IMPORTANT:
-- Text responses alone do NOT modify files. You MUST emit tool calls as JSON.
-- Always include the complete JSON object, not fragments.
-- Each file operation needs its own JSON block.
+RULES:
+1. JSON comes BEFORE any explanation text
+2. Each operation = one JSON block
+3. ALWAYS include all required arguments (path, content, command, etc.)
+4. NEVER output just descriptions - ALWAYS include actual JSON
+5. If text alone won't solve it, emit JSON tool calls
+
+WARNING: If you don't emit JSON tool calls, the system cannot execute your intentions. JSON is required.
 `.trim();
 
 function buildModularCodePrompt(taskHint = ""): string {
