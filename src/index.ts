@@ -1,7 +1,7 @@
 import inquirer from "inquirer";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { GenericMessage } from "./providers/base";
+import type { GenericMessage, GenericTool } from "./providers/base";
 import { streamResponse } from "./client";
 import {
   colors,
@@ -108,15 +108,7 @@ function parseLooseJsonObject(input: string): Record<string, unknown> | null {
 function collectObjectLikeSnippets(text: string): string[] {
   const snippets = new Set<string>();
 
-
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      snippets.add(trimmed);
-    }
-  }
-
-
+  // 1. Extract fenced code blocks (```json, ```js, etc.)
   const blocks = text.match(/```(?:json|javascript|js)?\s*([\s\S]*?)```/gi) || [];
   for (const block of blocks) {
     const inner = block
@@ -128,6 +120,23 @@ function collectObjectLikeSnippets(text: string): string[] {
     }
   }
 
+  // 2. Extract single-line JSON objects
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      snippets.add(trimmed);
+    }
+  }
+
+  // 3. Extract multi-line JSON objects (greedy matching)
+  const multiLineMatches = text.match(/\{[\s\S]*?\}/g) || [];
+  for (const match of multiLineMatches) {
+    if (match.trim().startsWith("{") && match.trim().endsWith("}")) {
+      snippets.add(match.trim());
+    }
+  }
+
+  // 4. Check if entire trimmed text is a JSON object
   const trimmed = text.trim();
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
     snippets.add(trimmed);
@@ -471,6 +480,9 @@ async function main() {
     }
 
     const modelInput = buildModelInput(normalizedInput);
+    const toolsForTurn: GenericTool[] | undefined = isLikelyActionRequest(normalizedInput)
+      ? undefined
+      : [];
     const requestedTargetDir = extractRequestedTargetDir(normalizedInput);
     const controller = new AbortController();
     const correlationId = getCorrelationId();
@@ -494,7 +506,7 @@ async function main() {
     startStickyLoading("Thinking");
 
     try {
-      for await (const token of streamResponse(messages, undefined, {
+      for await (const token of streamResponse(messages, toolsForTurn, {
         signal: controller.signal,
         sessionId,
         correlationId,
@@ -673,7 +685,7 @@ async function main() {
 
         let followUp = "";
         updateStickyLoading("Finalizing response");
-        for await (const token of streamResponse(messages, undefined, {
+        for await (const token of streamResponse(messages, toolsForTurn, {
           signal: controller.signal,
           sessionId,
           correlationId,
@@ -703,7 +715,7 @@ async function main() {
         });
         updateStickyLoading("Retrying language guard");
         let retryLangResponse = "";
-        for await (const token of streamResponse(messages, undefined, {
+        for await (const token of streamResponse(messages, toolsForTurn, {
           signal: controller.signal,
           sessionId,
           correlationId,
@@ -733,7 +745,7 @@ async function main() {
 
         updateStickyLoading("Retrying tool enforcement");
         let retryResponse = "";
-        for await (const token of streamResponse(messages, undefined, {
+        for await (const token of streamResponse(messages, toolsForTurn, {
           signal: controller.signal,
           sessionId,
           correlationId,
@@ -799,7 +811,7 @@ async function main() {
 
           updateStickyLoading("Applying quality checks");
           let gatedResponse = "";
-          for await (const token of streamResponse(messages, undefined, {
+          for await (const token of streamResponse(messages, toolsForTurn, {
             signal: controller.signal,
             sessionId,
             correlationId,

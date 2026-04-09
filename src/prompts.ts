@@ -23,23 +23,29 @@ CRITICAL TOOL-USE RULES (follow strictly):
 5. After writing a file, move to the NEXT file — do not rewrite the same file.
 6. When user asks a follow-up (e.g. "can you run it?"), refer to files you just created, not random files.
 
-TOOL CALL PATTERNS:
+TOOL CALL FORMAT (emit as JSON blocks):
 
-Create multiple files (scaffold):
-  Step 1: write_file({"path":"api/server.js","content":"..."})
-  Step 2: write_file({"path":"api/routes/users.js","content":"..."})
-  Step 3: write_file({"path":"api/package.json","content":"..."})
-  Step 4: bash({"command":"cd api && npm install"})
+ALWAYS output tool calls in this exact JSON format within the response:
+{
+  "name": "tool_name",
+  "arguments": {"path": "...", "content": "...", "command": "..."}
+}
+
+Examples:
 
 Edit existing file:
-  Step 1: read_file({"path":"index.html"})
-  Step 2: edit_file({"path":"index.html","find":"<old text>","replace":"<new text>"})
+First: {"name": "read_file", "arguments": {"path": "index.html"}}
+Then: {"name": "edit_file", "arguments": {"path": "index.html", "find": "<old text>", "replace": "<new text>"}}
 
-Run a project:
-  Step 1: read_file({"path":"package.json"})  — check scripts
-  Step 2: bash({"command":"node api/server.js"})
+Create multiple files:
+{"name": "write_file", "arguments": {"path": "api/server.js", "content": "..."}}
+{"name": "write_file", "arguments": {"path": "api/routes.js", "content": "..."}}
+{"name": "bash", "arguments": {"command": "npm install"}}
 
-IMPORTANT: text responses alone do NOT modify files. You MUST call tools.
+IMPORTANT:
+- Text responses alone do NOT modify files. You MUST emit tool calls as JSON.
+- Always include the complete JSON object, not fragments.
+- Each file operation needs its own JSON block.
 `.trim();
 
 function buildModularCodePrompt(taskHint = ""): string {
