@@ -250,7 +250,54 @@ function getLearningContext(): string {
   return parts.join("\n\n").trim();
 }
 
+type ToolsExposureMode = "auto" | "always" | "never";
+
+function getToolsExposureMode(): ToolsExposureMode {
+  const raw = (process.env.SENGIKU_TOOLS_MODE || "auto").toLowerCase();
+  if (raw === "always" || raw === "never") {
+    return raw;
+  }
+  return "auto";
+}
+
+/** Native tools + action-style follow-ups (fallback JSON tools, enforcement, quality gate). */
+function isActionCapableTurn(input: string): boolean {
+  const mode = getToolsExposureMode();
+  if (mode === "always") {
+    return true;
+  }
+  if (mode === "never") {
+    return false;
+  }
+  return isLikelyActionRequest(input);
+}
+
 function buildModelInput(userInput: string): string {
+  const mode = getToolsExposureMode();
+  if (mode === "never") {
+    return [
+      "Casual chat mode:",
+      "- Respond naturally and briefly.",
+      "- Do not force project/task framing.",
+      "- Ask follow-up only when user asks for help.",
+      "",
+      `User message: ${userInput}`,
+    ].join("\n");
+  }
+
+  if (mode === "always") {
+    const ctx = getLearningContext();
+    if (!ctx) {
+      return userInput;
+    }
+    return [
+      "Use this project context before answering:",
+      ctx,
+      "",
+      `User request: ${userInput}`,
+    ].join("\n");
+  }
+
   if (!isLikelyActionRequest(userInput)) {
     return [
       "Casual chat mode:",
@@ -276,7 +323,7 @@ function buildModelInput(userInput: string): string {
 }
 
 function isLikelyActionRequest(input: string): boolean {
-  return /buat|create|edit|ubah|write|run|jalankan|install|folder|file|command|bash|commit|push|pakai|use|tool|status|diff|log|branch/i.test(
+  return /buat|baca|ganti|hapus|perbaiki|cek|lihat|tambah|ubah|create|edit|change|update|delete|remove|fix|replace|refactor|rename|patch|migrate|add|brand|read|check|write|run|jalankan|install|folder|file|command|bash|commit|push|pakai|use|tool|status|diff|log|branch|\.(html?|tsx?|jsx?|css|json|md|py|rs|go)\b/i.test(
     input
   );
 }
@@ -487,7 +534,7 @@ async function main() {
     }
 
     const modelInput = buildModelInput(normalizedInput);
-    const toolsForTurn: GenericTool[] | undefined = isLikelyActionRequest(normalizedInput)
+    const toolsForTurn: GenericTool[] | undefined = isActionCapableTurn(normalizedInput)
       ? undefined
       : [];
     const requestedTargetDir = extractRequestedTargetDir(normalizedInput);
@@ -582,7 +629,7 @@ async function main() {
           break;
         }
 
-        if (!isLikelyActionRequest(normalizedInput)) {
+        if (getToolsExposureMode() === "never") {
           console.log(renderMarkdown(assistantText));
           printChatDivider();
           console.log();
@@ -743,7 +790,7 @@ async function main() {
         }
       }
 
-      if (isLikelyActionRequest(normalizedInput) && !executedAnyTool && looksLikeToolAvoidanceResponse(assistantText)) {
+      if (isActionCapableTurn(normalizedInput) && !executedAnyTool && looksLikeToolAvoidanceResponse(assistantText)) {
         messages.push({
           role: "user",
           content:
@@ -804,7 +851,7 @@ async function main() {
       }
 
       if (
-        isLikelyActionRequest(normalizedInput) &&
+        isActionCapableTurn(normalizedInput) &&
         shouldRunQualityGate(normalizedInput) &&
         executedToolEvents.length > 0 &&
         !wasLoopGuardTriggered(assistantText)

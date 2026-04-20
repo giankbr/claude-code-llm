@@ -2,16 +2,17 @@ import type { Tool, PermissionDecision, ToolResult } from "../../src/tools/base"
 
 const echoTool: Tool = {
   name: "echo_tool",
-  description: "Echo input text for plugin loader validation",
+  description:
+    "Plugin loader smoke test only: echoes `text`. Do not call for greetings or chat — answer the user directly.",
   input_schema: {
     type: "object",
     properties: {
       text: {
         type: "string",
-        description: "Text to echo back",
+        description: "Text to echo back (optional; omitted or empty echoes as placeholder)",
       },
     },
-    required: ["text"],
+    required: [],
   },
   isReadOnly(): boolean {
     return true;
@@ -24,13 +25,15 @@ const echoTool: Tool = {
   },
   tags: ["plugin", "test"],
   async checkPermissions(input: Record<string, unknown>): Promise<PermissionDecision> {
-    if (typeof input.text !== "string" || !input.text.trim()) {
-      return { allowed: false, reason: "Missing text argument" };
+    if (input.text !== undefined && typeof input.text !== "string") {
+      return { allowed: false, reason: "text must be a string" };
     }
     return { allowed: true };
   },
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    return { output: `echo_tool: ${String(input.text)}` };
+    const text = typeof input.text === "string" ? input.text : "";
+    const shown = text.length > 0 ? text : "(empty)";
+    return { output: `echo_tool: ${shown}` };
   },
 };
 

@@ -73,7 +73,7 @@ export class AnthropicProvider implements Provider {
         [...genericMessages].reverse().find((m) => m.role === "user")?.content || ""
       ),
       messages: anthropicMessages,
-      tools: anthropicTools,
+      ...(anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
     });
 
     for await (const chunk of stream) {

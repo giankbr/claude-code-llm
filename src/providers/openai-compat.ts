@@ -160,6 +160,17 @@ function getUserOnlyText(prompt: string): string {
   return prompt;
 }
 
+/** True when the latest user line is a short greeting / small talk (not a coding task). */
+function looksLikeCasualChatOnly(userFacing: string): boolean {
+  const t = userFacing.trim();
+  if (t.length > 100) {
+    return false;
+  }
+  return /^(halo|hai|hey|hi|hello|helo|yo|sup|wassup|selamat\s+(pagi|siang|sore|malam)|apa\s+kabar|good\s+(morning|afternoon|evening)|thanks|thank\s+you|terima\s+kasih|makasih|thx|ok+|okay|oke|sip|siap|mantap|nice)\b/i.test(
+    t
+  );
+}
+
 function selectHintSource(messages: GenericMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -573,20 +584,25 @@ export class OpenAICompatProvider implements Provider {
   ): AsyncGenerator<string> {
     const hintSource = selectHintSource(messages);
     const lastUserPrompt = hintSource || [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    const userFacingRequest = getUserOnlyText(lastUserPrompt);
     const listDirPathHint = extractListDirPathHint(lastUserPrompt);
     let lastMentionedFilePath: string | undefined;
     for (const msg of messages) {
-      if (msg.role === "user") {
-        const m = msg.content.match(FILE_EXT_RE);
-        if (m?.[1]) lastMentionedFilePath = normalizeFilePath(m[1]);
+      if (msg.role !== "user") {
+        continue;
+      }
+      const face = getUserOnlyText(msg.content);
+      const m = face.match(FILE_EXT_RE);
+      if (m?.[1]) {
+        lastMentionedFilePath = normalizeFilePath(m[1]);
       }
     }
     const isGemma = /gemma/i.test(this.model);
     const maxTokens = isGemma ? 1536 : 4096;
     let autoReadContent = "";
     const isDetailedRequest =
-      lastUserPrompt.length > 150 ||
-      /\b(improve|update|change|redesign|refactor|add|tambah|ubah|ganti|buat)\b/i.test(lastUserPrompt);
+      userFacingRequest.length > 150 ||
+      /\b(improve|update|change|redesign|refactor|add|tambah|ubah|ganti|buat)\b/i.test(userFacingRequest);
     const mentionedFile = lastMentionedFilePath;
     if (isDetailedRequest && mentionedFile) {
       try {
@@ -627,8 +643,11 @@ export class OpenAICompatProvider implements Provider {
           `[END SESSION STATE]`;
         sys = sys.replace(/\n\n\[SESSION STATE\][\s\S]*?\[END SESSION STATE\]/, "") + stateBlock;
       }
-      // Force JSON output for action requests
-      const isActionRequest = /\b(ubah|buat|edit|write|create|update|modify|run|jalankan|install|delete|remove)\b/i.test(lastUserPrompt);
+      // Force JSON output for action requests (use user-facing line only — not project memory / rules)
+      const isActionRequest =
+        /\b(ubah|buat|edit|write|create|update|modify|run|jalankan|install|delete|remove)\b/i.test(
+          userFacingRequest
+        );
       if (isActionRequest) {
         sys += `\n\n[EXECUTION REQUIREMENT]\nUser is requesting an action. You MUST emit JSON tool calls. Start your response with the JSON blocks, then explain. No text-only responses.`;
       }
@@ -831,20 +850,13 @@ export class OpenAICompatProvider implements Provider {
         }
         const userWantsFileChange =
           !!lastMentionedFilePath &&
-          messages.some(
-            (m) =>
-              m.role === "user" &&
-              /\b(updat|chang|modif|improv|add|edit|creat|buat|ubah|ganti|tambah|perbaiki|redesign|refactor|fix|make|set|switch|all page|proceed|yes|ok|gas|lanjut)\b/i.test(
-                m.content
-              )
+          /\b(updat|chang|modif|improv|add|edit|creat|buat|ubah|ganti|tambah|perbaiki|redesign|refactor|fix|make|set|switch|all page|proceed|yes|ok|gas|lanjut)\b/i.test(
+            userFacingRequest
           );
-        const userWantsScaffoldOrBuild = messages.some(
-          (m) =>
-            m.role === "user" &&
-            /\b(generate|create|build|scaffold|setup|crud|api|express|nestjs|hono|fastify|project|boilerplate|init|buat)\b/i.test(
-              m.content
-            )
-        );
+        const userWantsScaffoldOrBuild =
+          /\b(generate|create|build|scaffold|setup|crud|api|express|nestjs|hono|fastify|project|boilerplate|init|buat)\b/i.test(
+            userFacingRequest
+          );
         // Also catch when model describes UI changes (any verb form)
         const modelDescribesChanges =
           /\b(updat|chang|add|improv|enhanc|modif|replac|insert|creat|redesign|refactor|sudah|berhasil|ditambah|diubah|diperbaiki|I'll|I'm|Let me|Here's)\b/i.test(
@@ -855,6 +867,7 @@ export class OpenAICompatProvider implements Provider {
           );
 
         const shouldRetry =
+          !looksLikeCasualChatOnly(userFacingRequest) &&
           (userWantsFileChange || userWantsScaffoldOrBuild || modelDescribesChanges) &&
           depth < MAX_TOOL_DEPTH - 2;
 

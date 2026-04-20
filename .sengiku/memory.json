@@ -10,9 +10,12 @@
     "bun run index.ts"
   ],
   "frequentTools": [
+    "bash",
+    "write_file",
     "echo_tool",
-    "read_file"
+    "list_dir",
+    "npm"
   ],
-  "lastActive": "2026-04-08T11:17:36.153Z",
+  "lastActive": "2026-04-08T12:34:09.952Z",
   "preferredWorkflow": "tool-first execution with iterative follow-up"
 }

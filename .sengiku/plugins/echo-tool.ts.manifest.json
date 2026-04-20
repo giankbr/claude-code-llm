@@ -3,5 +3,5 @@
   "version": "1.0.0",
   "description": "Echo input text for plugin loader validation",
   "permissions": ["text:echo"],
-  "checksum": "1cbcf591e69199e0b46c50d03736b3a8cc785cfea8c9b2237bf027b260cc819a"
+  "checksum": "0b216e6ed3c5fb81d4e2e2e72c7e64f172cf5db6d69042ee97a77f5e688ab5fd"
 }
