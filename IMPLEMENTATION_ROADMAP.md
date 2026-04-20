@@ -420,3 +420,18 @@ echo 'bash(command: "ls -la")' | bun run index.ts
 - `src/providers/anthropic.ts` — MAX_TOOL_DEPTH, signal handling
 - `src/providers/openai-compat.ts` — MAX_TOOL_DEPTH, signal handling
 - `src/commands/doctor.ts` — analytics summary display
+
+---
+
+## Post-Roadmap Fixes (After Core 10 Features)
+
+Tambahan hardening setelah semua 10 fitur selesai:
+
+- **Requested target directory guard refinement** (`src/index.ts`)
+  - Improve parsing untuk frasa natural seperti `di folder /api` dan `folder api`.
+  - Resolve path `/name` ke workspace-local folder jika folder tersebut ada di project.
+  - Mencegah tool `write_file` / `edit_file` menulis ke luar target folder yang diminta user.
+
+- **Outcome**
+  - Request scoped edit/create lebih konsisten.
+  - Mengurangi kasus model menulis ke file root yang tidak diminta (contoh `index.ts`).

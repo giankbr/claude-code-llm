@@ -173,6 +173,30 @@ function extractTextToolCalls(text: string): TextToolCall[] {
     }
   }
 
+  const boxRegex =
+    /<\|begin_of_box\|>\s*([A-Za-z0-9._-]+)\s*([\s\S]*?)<\/tool_call>/gi;
+  let boxMatch: RegExpExecArray | null = boxRegex.exec(text);
+  while (boxMatch) {
+    const toolName = (boxMatch[1] || "").trim();
+    const body = boxMatch[2] || "";
+    if (toolName) {
+      const args: Record<string, unknown> = {};
+      const pairRegex =
+        /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/gi;
+      let pairMatch: RegExpExecArray | null = pairRegex.exec(body);
+      while (pairMatch) {
+        const key = (pairMatch[1] || "").trim();
+        const value = (pairMatch[2] || "").trim();
+        if (key) {
+          args[key] = value;
+        }
+        pairMatch = pairRegex.exec(body);
+      }
+      calls.push({ name: toolName, arguments: args });
+    }
+    boxMatch = boxRegex.exec(text);
+  }
+
   return calls;
 }
 
@@ -181,6 +205,29 @@ function isNoOpTextToolCall(call: TextToolCall): boolean {
     return true;
   }
   return false;
+}
+
+function unwrapEchoToolTextResponse(text: string): string {
+  const calls = extractTextToolCalls(text);
+  if (calls.length !== 1) {
+    return text;
+  }
+  const [call] = calls;
+  if (!call || call.name !== "echo_tool") {
+    return text;
+  }
+  const maybeText = call.arguments.text;
+  if (typeof maybeText !== "string" || !maybeText.trim()) {
+    return text;
+  }
+
+  // Only unwrap when the entire response is effectively a single JSON tool call.
+  const trimmed = text.trim();
+  const asLooseJson = parseLooseJsonObject(trimmed);
+  if (!asLooseJson) {
+    return text;
+  }
+  return maybeText;
 }
 
 function isUnknownToolResult(result: string): boolean {
@@ -262,6 +309,9 @@ function getToolsExposureMode(): ToolsExposureMode {
 
 /** Native tools + action-style follow-ups (fallback JSON tools, enforcement, quality gate). */
 function isActionCapableTurn(input: string): boolean {
+  if (isCasualGreeting(input)) {
+    return false;
+  }
   const mode = getToolsExposureMode();
   if (mode === "always") {
     return true;
@@ -273,6 +323,16 @@ function isActionCapableTurn(input: string): boolean {
 }
 
 function buildModelInput(userInput: string): string {
+  if (isCasualGreeting(userInput)) {
+    return [
+      "Casual chat mode:",
+      "- Respond naturally and briefly.",
+      "- Do not call tools.",
+      "",
+      `User message: ${userInput}`,
+    ].join("\n");
+  }
+
   const mode = getToolsExposureMode();
   if (mode === "never") {
     return [
@@ -328,15 +388,43 @@ function isLikelyActionRequest(input: string): boolean {
   );
 }
 
+function isCasualGreeting(input: string): boolean {
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.,]+$/g, "");
+  return /^(halo|hai|hi|hello|pagi|siang|sore|malam|apa kabar|gimana kabar|yo|bro|sis|hey)$/.test(
+    normalized
+  );
+}
+
 function extractRequestedTargetDir(input: string): string | null {
   const absolutePathMatch = input.match(/(\/[^\s]+)/);
   if (absolutePathMatch && absolutePathMatch[1]) {
-    return absolutePathMatch[1].replace(/[.,]$/, "");
+    const raw = absolutePathMatch[1].replace(/[.,]$/, "");
+    const localCandidate = path.join(process.cwd(), raw.replace(/^\/+/, ""));
+    if (existsSync(localCandidate)) {
+      return localCandidate;
+    }
+    return raw;
   }
 
   const newFolderMatch = input.match(/folder baru(?: bernama)?\s+([A-Za-z0-9._-]+)/i);
   if (newFolderMatch && newFolderMatch[1]) {
     return path.join(process.cwd(), newFolderMatch[1]);
+  }
+
+  const folderMatch = input.match(/(?:di\s+)?folder\s+([A-Za-z0-9._/-]+)/i);
+  if (folderMatch && folderMatch[1]) {
+    const raw = folderMatch[1].replace(/[.,]$/, "");
+    if (raw.startsWith("/")) {
+      const localCandidate = path.join(process.cwd(), raw.replace(/^\/+/, ""));
+      if (existsSync(localCandidate)) {
+        return localCandidate;
+      }
+      return raw;
+    }
+    return path.join(process.cwd(), raw);
   }
 
   return null;
@@ -385,6 +473,7 @@ function stripToolMarkers(text: string): string {
     .replace(/\[TOOL:[^\]]*\]/g, "")
     .replace(/\[RESULT:[\s\S]*?\](?=\[TOOL:|$)/g, "")
     .replace(/\[RESULT:[\s\S]*$/g, "")
+    .replace(/<\|begin_of_box\|>[\s\S]*?<\/tool_call>/gi, "")
     .trim();
 }
 
@@ -608,12 +697,12 @@ async function main() {
       }
 
       stopStickyLoading();
-      let assistantText = stripToolMarkers(fullResponse);
+      let assistantText = unwrapEchoToolTextResponse(stripToolMarkers(fullResponse));
       let fallbackRound = 0;
       const maxFallbackRounds = 5;
 
       while (true) {
-        assistantText = stripToolMarkers(assistantText);
+        assistantText = unwrapEchoToolTextResponse(stripToolMarkers(assistantText));
         const textToolCalls = extractTextToolCalls(assistantText).filter(
           (call) => !isNoOpTextToolCall(call)
         );
@@ -753,7 +842,7 @@ async function main() {
           break;
         }
 
-        assistantText = stripToolMarkers(followUp);
+        assistantText = unwrapEchoToolTextResponse(stripToolMarkers(followUp));
       }
 
       if (
@@ -808,7 +897,7 @@ async function main() {
           retryResponse += token;
         }
         stopStickyLoading();
-        retryResponse = stripToolMarkers(retryResponse);
+        retryResponse = unwrapEchoToolTextResponse(stripToolMarkers(retryResponse));
         const retryToolCalls = extractTextToolCalls(retryResponse);
         messages.push({
           role: "assistant",
@@ -874,7 +963,7 @@ async function main() {
             gatedResponse += token;
           }
           stopStickyLoading();
-          gatedResponse = stripToolMarkers(gatedResponse);
+          gatedResponse = unwrapEchoToolTextResponse(stripToolMarkers(gatedResponse));
 
           if (gatedResponse.trim()) {
             messages.push({

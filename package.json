@@ -2,6 +2,9 @@
   "name": "agent-ai-llm",
   "version": "2.1.96",
   "module": "index.ts",
+  "bin": {
+    "sengiku": "./bin/sengiku"
+  },
   "type": "module",
   "private": true,
   "devDependencies": {
